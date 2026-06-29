@@ -71,12 +71,42 @@ CMD_VEH_SETTINGS = _resolve_cmd('CMD_VEH_SETTINGS', 107)
 
 
 def handle_customization(fake_server, requestID, cmd, args):
-	LOG_DEBUG('CommandHandlers.handle_customization', requestID, cmd, args)
-	from gui.mods.offhangar.data import getOfflineInventory
-	inv = getOfflineInventory().get('inventory', {})
-	compDescrs = inv.get(1, {}).get('compDescr', {})
-	diff = {'inventory': {1: {'compDescr': compDescrs}}}
-	return _success_with_update(diff)
+	try:
+		from gui.mods.offhangar.data import getOfflineInventory
+		import time
+		import AccountCommands
+		import items.vehicles as iv
+		from debug_utils import LOG_CURRENT_EXCEPTION
+		
+		arr = args[0] if (isinstance(args, tuple) and len(args) == 1) else args
+		vehInvID = arr[1]
+		
+		inv = getOfflineInventory().get('inventory', {})
+		compDescrs = inv.setdefault(1, {}).setdefault('compDescr', {})
+		
+		if vehInvID not in compDescrs:
+			return _success()
+			
+		vd = iv.VehicleDescr(compDescrs[vehInvID])
+		now = int(time.time())
+		
+		if cmd == getattr(AccountCommands, 'CMD_VEH_CAMOUFLAGE', 120):
+			vd.setCamouflage(arr[2], arr[3], now, arr[4])
+		elif cmd == getattr(AccountCommands, 'CMD_VEH_INSCRIPTION', 123) or len(arr) == 6:
+			vd.setPlayerInscription(arr[2], arr[3], now, arr[4], arr[5])
+		elif cmd == getattr(AccountCommands, 'CMD_VEH_EMBLEM', 122) or len(arr) == 5:
+			vd.setPlayerEmblem(arr[2], arr[3], now, arr[4])
+			
+		compDescrs[vehInvID] = vd.makeCompactDescr()
+		from gui.mods.offhangar.state import save_vehicle_state
+		save_vehicle_state(inv, vehInvID)
+		
+		diff = {'inventory': {1: {'compDescr': {vehInvID: compDescrs[vehInvID]}}}}
+		return _success_with_update(diff)
+	except Exception:
+		from debug_utils import LOG_CURRENT_EXCEPTION
+		LOG_CURRENT_EXCEPTION()
+		return RequestResult(0, 'Exception', None)
 
 
 _VEHICLE_MODULE_TYPES = set(
@@ -643,10 +673,10 @@ def _get_customization_data():
 		for nationID in range(nations_count):
 			cust = vehicles.g_cache.customization(nationID)
 			res.append({
-				'camouflages': cust.get('camouflages', {}),
-				'inscriptions': cust.get('inscriptions', {}),
-				'emblems': cust.get('emblems', {}),
-				'horns': cust.get('horns', {})
+				'camouflages': dict((k, v.get('priceFactor', 1.0)) for k, v in cust.get('camouflages', {}).iteritems()),
+				'inscriptions': {},
+				'emblems': {},
+				'horns': {}
 			})
 	except Exception:
 		res = [{'camouflages': {}, 'inscriptions': {}, 'emblems': {}, 'horns': {}} for _ in range(nations_count)]
@@ -681,10 +711,10 @@ def handle_sync_shop(fake_server, requestID, cmd, args):
 		'isEnabledBuyingGoldShellsForCredits': True,
 		'isEnabledBuyingGoldEqsForCredits': True,
 		'tradeFees': {'selling': 0.5},
-		'playerEmblemCost': (50000, 100),
-		'playerInscriptionCost': (50000, 100),
+		'playerEmblemCost': {7: (50000, False), 30: (100000, False), 0: (100, True)},
+		'playerInscriptionCost': {7: (50000, False), 30: (100000, False), 0: (100, True)},
 		'hornCost': (50000, 100),
-		'camouflageCost': (50000, 100),
+		'camouflageCost': {7: (50000, False), 30: (100000, False), 0: (100, True)},
 		'customization': _customization_data,
 		'playerEmblems': {'groups': {}},
 		'items': getOfflineShopItems(),

@@ -67,9 +67,14 @@ class FakeServer(object):
 	def __doCmd(self, requestID, cmd, *args):
 		requestID, resultID, errorStr, ext = self.__router.dispatch(self, requestID, cmd, args)
 
+		LOG_DEBUG('Server.__doCmd scheduling callback', requestID, resultID, errorStr)
 		if ext is not None:
-			callback = functools.partial(BigWorld.player().onCmdResponseExt, requestID, resultID, errorStr, cPickle.dumps(ext))
+			cb = functools.partial(BigWorld.player().onCmdResponseExt, requestID, resultID, errorStr, cPickle.dumps(ext))
 		else:
-			callback = functools.partial(BigWorld.player().onCmdResponse, requestID, resultID, errorStr)
+			cb = functools.partial(BigWorld.player().onCmdResponse, requestID, resultID, errorStr)
 
-		BigWorld.callback(0.0, callback)
+		def wrapped_callback():
+			LOG_DEBUG('Server.__doCmd executing callback', requestID)
+			cb()
+
+		BigWorld.callback(0.0, wrapped_callback)

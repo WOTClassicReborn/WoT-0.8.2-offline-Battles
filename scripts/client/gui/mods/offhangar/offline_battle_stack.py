@@ -129,6 +129,17 @@ def build_offline_battle_context(player, selected_veh_inv_id):
 	Important: keys/fields here are consumed by the arena/avatar stubs injected by the mod.
 	"""
 	map_id, map_name = random.choice(_MAP_POOL)
+
+	# Safely resolve map_id from ArenaType cache
+	try:
+		import ArenaType
+		if not getattr(ArenaType, 'g_cache', None):
+			ArenaType.init()
+		for k, v in ArenaType.g_cache.iteritems():
+			if getattr(v, 'geometryName', '') == map_name:
+				map_id = k
+				break
+	except: pass
 	allies, enemies = [], []
 
 	player_dbid = getattr(player, 'databaseID', 10000001) or 10000001
@@ -139,11 +150,15 @@ def build_offline_battle_context(player, selected_veh_inv_id):
 		from CurrentVehicle import g_currentVehicle
 		item = getattr(g_currentVehicle, 'item', None)
 		if item is not None:
-			selected_compact_descr = getattr(item, 'intCD', 0) or getattr(item, 'typeCompDescr', 0) or 0
+			if hasattr(item, 'descriptor') and hasattr(item.descriptor, 'makeCompactDescr'):
+				try: selected_compact_descr = item.descriptor.makeCompactDescr()
+				except: pass
+			if not selected_compact_descr:
+				selected_compact_descr = getattr(item, 'intCD', 0) or getattr(item, 'typeCompDescr', 0) or 0
 			if not selected_compact_descr and hasattr(item, 'descriptor'):
 				selected_compact_descr = getattr(item.descriptor, 'typeCompDescr', 0) or 0
 		from gui.mods.offhangar.logging import LOG_DEBUG
-		LOG_DEBUG('OfflineBattleStack.g_currentVehicle:', item, selected_compact_descr)
+		LOG_DEBUG('OfflineBattleStack.g_currentVehicle:', item, type(selected_compact_descr))
 	except Exception as e:
 		from gui.mods.offhangar.logging import LOG_DEBUG
 		LOG_DEBUG('OfflineBattleStack.g_currentVehicle ERROR:', str(e))
@@ -181,12 +196,7 @@ def build_offline_battle_context(player, selected_veh_inv_id):
 	prefix_allies = str(CONFIG_OPTIONS.get('bot_name_prefix_allies', 'Bot_'))
 	prefix_enemies = str(CONFIG_OPTIONS.get('bot_name_prefix_enemies', 'Bot_'))
 
-	for i in xrange(14):
-		allies.append(_make_player_info(acc_id, 1, '%s%d' % (prefix_allies, i + 1), i + 2, selected_compact_descr))
-		acc_id += 1
-	for i in xrange(15):
-		enemies.append(_make_player_info(acc_id, 2, '%s%d' % (prefix_enemies, i + 15), i + 16, selected_compact_descr))
-		acc_id += 1
+	pass
 
 	vehicles = {}
 	for p in (allies + enemies):
@@ -219,6 +229,6 @@ def build_offline_battle_context(player, selected_veh_inv_id):
 		'team2': enemies,
 		'vehicles': vehicles,
 	}
-	LOG_DEBUG('OfflineBattleStack.ready', map_name, 'mapID', map_id, 'allies', len(allies), 'enemies', len(enemies), 'vehCD', selected_compact_descr)
+	LOG_DEBUG('OfflineBattleStack.ready', map_name, 'mapID', map_id, 'allies', len(allies), 'enemies', len(enemies), 'vehCD', repr(selected_compact_descr))
 	return ctx
 

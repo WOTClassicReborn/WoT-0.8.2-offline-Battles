@@ -80,6 +80,144 @@ def install_dossier_guard():
                 compDescr = ''
             return _orig(compDescr)
         dossiers.getAccountDossierDescr = _safe
+        
+        import Account
+        orig_onCmdResponse = Account.Account.onCmdResponse
+        def onCmdResponse_hook(self, requestID, resultID, errorStr, *args, **kwargs):
+            LOG_DEBUG('Account.onCmdResponse executed!', requestID, resultID, errorStr)
+            return orig_onCmdResponse(self, requestID, resultID, errorStr, *args, **kwargs)
+        Account.Account.onCmdResponse = onCmdResponse_hook
+        PlayerAccountCls = getattr(Account, 'PlayerAccount', None)
+        if PlayerAccountCls:
+            orig_doCmd = getattr(PlayerAccountCls, '_PlayerAccount__doCmd', None)
+            if orig_doCmd:
+                def doCmd_hook(self, doCmdMethod, cmd, callback, *args):
+                    LOG_DEBUG('PlayerAccount.__doCmd CALLED!', doCmdMethod, cmd, 'callback is None:', callback is None)
+                    return orig_doCmd(self, doCmdMethod, cmd, callback, *args)
+                setattr(PlayerAccountCls, '_PlayerAccount__doCmd', doCmd_hook)
+        
+            orig_onCmdResponseExt = getattr(PlayerAccountCls, 'onCmdResponseExt', None)
+            if orig_onCmdResponseExt:
+                def onCmdResponseExt_hook(self, requestID, resultID, errorStr, ext, *args, **kwargs):
+                    cb = self._PlayerAccount__onCmdResponse.get(requestID) if hasattr(self, '_PlayerAccount__onCmdResponse') else None
+                    LOG_DEBUG('PlayerAccount.onCmdResponseExt executed!', requestID, resultID, errorStr, len(ext) if ext else 0, 'Callback found:', cb is not None)
+                    return orig_onCmdResponseExt(self, requestID, resultID, errorStr, ext, *args, **kwargs)
+                setattr(PlayerAccountCls, 'onCmdResponseExt', onCmdResponseExt_hook)
+        
+        from gui.Scaleform.customization.EmblemInterface import EmblemInterface
+        orig_onChangeVehicleEmblem = EmblemInterface._EmblemInterface__onChangeVehicleEmblem
+        def onChangeVehicleEmblem_hook(self, resultID, price):
+            LOG_DEBUG('EmblemInterface.__onChangeVehicleEmblem CALLED! resultID:', resultID, 'price:', price)
+            LOG_DEBUG('Delegates on onCustomizationChangeSuccess:', len(self.onCustomizationChangeSuccess._Event__delegates) if hasattr(self.onCustomizationChangeSuccess, '_Event__delegates') else 'NO DELEGATES ATTRIBUTE', self.onCustomizationChangeSuccess._Event__delegates if hasattr(self.onCustomizationChangeSuccess, '_Event__delegates') else '')
+            return orig_onChangeVehicleEmblem(self, resultID, price)
+        EmblemInterface._EmblemInterface__onChangeVehicleEmblem = onChangeVehicleEmblem_hook
+        
+        from gui.Scaleform.customization.InscriptionInterface import InscriptionInterface
+        orig_onChangeVehicleInscription = InscriptionInterface._InscriptionInterface__onChangeVehicleInscription
+        def onChangeVehicleInscription_hook(self, resultID, price):
+            LOG_DEBUG('InscriptionInterface.__onChangeVehicleInscription CALLED! resultID:', resultID, 'price:', price)
+            LOG_DEBUG('Delegates on onCustomizationChangeSuccess:', len(self.onCustomizationChangeSuccess._Event__delegates) if hasattr(self.onCustomizationChangeSuccess, '_Event__delegates') else 'NO DELEGATES ATTRIBUTE', self.onCustomizationChangeSuccess._Event__delegates if hasattr(self.onCustomizationChangeSuccess, '_Event__delegates') else '')
+            return orig_onChangeVehicleInscription(self, resultID, price)
+        InscriptionInterface._InscriptionInterface__onChangeVehicleInscription = onChangeVehicleInscription_hook
+        
+        from gui.Scaleform.Waiting import Waiting
+        orig_waiting_hide = Waiting.hide
+        def waiting_hide_hook(message):
+            LOG_DEBUG('Waiting.hide called for:', message)
+            return orig_waiting_hide(message)
+        Waiting.hide = staticmethod(waiting_hide_hook)
+        
+        orig_waiting_show = Waiting.show
+        def waiting_show_hook(message, *args, **kwargs):
+            LOG_DEBUG('Waiting.show called for:', message)
+            return orig_waiting_show(message, *args, **kwargs)
+        Waiting.show = staticmethod(waiting_show_hook)
+        
+        from gui.Scaleform.VehicleCustomization import VehicleCustomization
+        orig_ci_onCustomizationChangeSuccess = VehicleCustomization._VehicleCustomization__ci_onCustomizationChangeSuccess
+        def ci_onCustomizationChangeSuccess_hook(self, message, type):
+            LOG_DEBUG('__ci_onCustomizationChangeSuccess CALLED! current steps:', self._VehicleCustomization__steps)
+            res = orig_ci_onCustomizationChangeSuccess(self, message, type)
+            if hasattr(self, '_VehicleCustomization__steps'):
+                if self._VehicleCustomization__steps <= 0:
+                    LOG_DEBUG('Steps reached 0! Forcing __onServerResponsesReceived just in case')
+                    self._VehicleCustomization__onServerResponsesReceived()
+            return res
+        VehicleCustomization._VehicleCustomization__ci_onCustomizationChangeSuccess = ci_onCustomizationChangeSuccess_hook
+
+        orig_onConfirmApply = VehicleCustomization.onConfirmApply
+        def onConfirmApply_hook(self, _):
+            import BigWorld
+            inv = BigWorld.player().inventory
+            
+            actual_commands_sent = [0]
+            
+            orig_changeVehicleEmblem = inv.changeVehicleEmblem
+            orig_changeVehicleInscription = inv.changeVehicleInscription
+            orig_changeVehicleCamouflage = inv.changeVehicleCamouflage
+            orig_changeVehicleHorn = getattr(inv, 'changeVehicleHorn', None)
+            
+            def hook_emblem(*args, **kwargs):
+                actual_commands_sent[0] += 1
+                return orig_changeVehicleEmblem(*args, **kwargs)
+                
+            def hook_inscription(*args, **kwargs):
+                actual_commands_sent[0] += 1
+                return orig_changeVehicleInscription(*args, **kwargs)
+                
+            def hook_camouflage(*args, **kwargs):
+                actual_commands_sent[0] += 1
+                return orig_changeVehicleCamouflage(*args, **kwargs)
+                
+            def hook_horn(*args, **kwargs):
+                actual_commands_sent[0] += 1
+                if orig_changeVehicleHorn:
+                    return orig_changeVehicleHorn(*args, **kwargs)
+                
+            inv.changeVehicleEmblem = hook_emblem
+            inv.changeVehicleInscription = hook_inscription
+            inv.changeVehicleCamouflage = hook_camouflage
+            if orig_changeVehicleHorn:
+                inv.changeVehicleHorn = hook_horn
+            
+            try:
+                res = orig_onConfirmApply(self, _)
+            finally:
+                inv.changeVehicleEmblem = orig_changeVehicleEmblem
+                inv.changeVehicleInscription = orig_changeVehicleInscription
+                inv.changeVehicleCamouflage = orig_changeVehicleCamouflage
+                if orig_changeVehicleHorn:
+                    inv.changeVehicleHorn = orig_changeVehicleHorn
+                
+            if hasattr(self, '_VehicleCustomization__steps'):
+                wg_steps = self._VehicleCustomization__steps
+                self._VehicleCustomization__steps = actual_commands_sent[0]
+                LOG_DEBUG('VehicleCustomization.onConfirmApply EXACT COMMANDS SENT:', actual_commands_sent[0], 'WG STEPS WAS:', wg_steps)
+                
+                if self._VehicleCustomization__steps <= 0:
+                    self._VehicleCustomization__onServerResponsesReceived()
+            return res
+        VehicleCustomization.onConfirmApply = onConfirmApply_hook
+
+        orig_onServerResponsesReceived = VehicleCustomization._VehicleCustomization__onServerResponsesReceived
+        def onServerResponsesReceived_hook(self):
+            LOG_DEBUG('__onServerResponsesReceived CALLED! lockUpdate:', self._VehicleCustomization__lockUpdate)
+            return orig_onServerResponsesReceived(self)
+        VehicleCustomization._VehicleCustomization__onServerResponsesReceived = onServerResponsesReceived_hook
+        
+        orig_vc_dispossessUI = VehicleCustomization.dispossessUI
+        def vc_dispossessUI_hook(self):
+            LOG_DEBUG('VehicleCustomization.dispossessUI CALLED! steps:', self._VehicleCustomization__steps)
+            return orig_vc_dispossessUI(self)
+        VehicleCustomization.dispossessUI = vc_dispossessUI_hook
+        
+        from gui.Scaleform.customization.BaseTimedCustomizationInterface import BaseTimedCustomizationInterface
+        orig_dispossessUI = BaseTimedCustomizationInterface.dispossessUI
+        def dispossessUI_hook(self):
+            LOG_DEBUG('BaseTimedCustomizationInterface.dispossessUI CALLED for:', self._name)
+            return orig_dispossessUI(self)
+        BaseTimedCustomizationInterface.dispossessUI = dispossessUI_hook
+        
         LOG_DEBUG('SessionGuard.dossier_guard_installed')
     except Exception:
         from debug_utils import LOG_CURRENT_EXCEPTION
@@ -522,3 +660,151 @@ def patch_stats_requesterr_captcha():
         StatsRequesterr.battlesTillCaptcha = _mock_btc
     except: pass
 patch_stats_requesterr_captcha()
+
+def patch_data_providers_defcost():
+    try:
+        from gui.scaleform.customization.data_providers import CamouflagesDataProvider, EmblemsDataProvider
+        
+        _orig_Camo_init = CamouflagesDataProvider.__init__
+        def _safe_Camo_init(self, nationID):
+            _orig_Camo_init(self, nationID)
+            self._CamouflagesDataProvider__defCost = 0.0
+        CamouflagesDataProvider.__init__ = _safe_Camo_init
+        
+        _orig_Emblem_init = EmblemsDataProvider.__init__
+        def _safe_Emblem_init(self, *args, **kwargs):
+            _orig_Emblem_init(self, *args, **kwargs)
+            self._defCost = 0.0
+        EmblemsDataProvider.__init__ = _safe_Emblem_init
+    except Exception:
+        pass
+
+patch_data_providers_defcost()
+
+def debug_construct_object():
+    try:
+        from gui.scaleform.customization.data_providers import CamouflagesDataProvider
+        from debug_utils import LOG_DEBUG
+        _orig_construct = CamouflagesDataProvider._constructObject
+        
+        def _patched_construct(self, cID, groups, camouflages, armorColor, lifeCycle=None, isCurrent=False, withoutCheck=True, currentCompactDescriptor=None):
+            camouflageInfo = _orig_construct(self, cID, groups, camouflages, armorColor, lifeCycle, isCurrent, withoutCheck, currentCompactDescriptor)
+            
+            camouflage = camouflages.get(cID, None)
+            if camouflage is None:
+                LOG_DEBUG('CAMO DEBUG: cID %s is None in camouflages dict' % cID)
+            else:
+                showInShop = camouflage.get('showInShop', False)
+                denyCompactDescriptor = camouflage.get('deny', [])
+                LOG_DEBUG('CAMO DEBUG: cID %s: showInShop=%s, withoutCheck=%s, currentCD=%s, deny=%s' % (
+                    cID, showInShop, withoutCheck, currentCompactDescriptor, denyCompactDescriptor
+                ))
+            
+            LOG_DEBUG('CAMO DEBUG: cID %s RESULT: %s' % (cID, camouflageInfo is not None))
+            return camouflageInfo
+            
+        CamouflagesDataProvider._constructObject = _patched_construct
+    except Exception as e:
+        pass
+
+debug_construct_object()
+
+def debug_onrequestlist():
+    try:
+        from gui.scaleform.customization.data_providers import CamouflagesDataProvider
+        from debug_utils import LOG_DEBUG
+        _orig_onrequest = CamouflagesDataProvider.onRequestList
+        
+        def _patched_onrequest(self, groupName):
+            LOG_DEBUG('CAMO DEBUG: onRequestList called with groupName=%s' % groupName)
+            result = _orig_onrequest(self, groupName)
+            LOG_DEBUG('CAMO DEBUG: onRequestList result len=%s' % len(result))
+            return result
+            
+        CamouflagesDataProvider.onRequestList = _patched_onrequest
+    except Exception as e:
+        pass
+
+debug_onrequestlist()
+
+def debug_groups_buildlist():
+    try:
+        from gui.scaleform.customization.data_providers import CamouflageGroupsDataProvider
+        from debug_utils import LOG_DEBUG
+        _orig_build = CamouflageGroupsDataProvider.buildList
+        
+        def _patched_build(self):
+            import items.vehicles as vehicles
+            customization = vehicles.g_cache.customization(self._nationID)
+            if customization is None:
+                LOG_DEBUG('CAMO DEBUG: customization is None for nationID %s' % self._nationID)
+            else:
+                groups = customization.get('camouflageGroups', {})
+                LOG_DEBUG('CAMO DEBUG: groups count=%s' % len(groups))
+                for name, info in groups.iteritems():
+                    LOG_DEBUG('CAMO DEBUG: group %s has %s ids' % (name, len(info.get('ids', []))))
+            
+            return _orig_build(self)
+            
+        CamouflageGroupsDataProvider.buildList = _patched_build
+    except Exception as e:
+        pass
+
+debug_groups_buildlist()
+
+def debug_ongetpackagescost():
+    try:
+        from gui.scaleform.customization.data_providers import RentalPackageDataProviderBase
+        from debug_utils import LOG_DEBUG
+        _orig_onGetPackagesCost = RentalPackageDataProviderBase._onGetPackagesCost
+        
+        def _patched_onGetPackagesCost(self, resultID, costs, rev, refresh):
+            LOG_DEBUG('CAMO DEBUG: _onGetPackagesCost called! resultID=%s, costs=%s' % (resultID, costs))
+            return _orig_onGetPackagesCost(self, resultID, costs, rev, refresh)
+            
+        RentalPackageDataProviderBase._onGetPackagesCost = _patched_onGetPackagesCost
+    except Exception as e:
+        pass
+
+debug_ongetpackagescost()
+
+def log_res_cache():
+    import BigWorld
+    def _do_log():
+        try:
+            from account_helpers import AccountCommands
+            from debug_utils import LOG_DEBUG
+            LOG_DEBUG('CAMO DEBUG: RES_CACHE = %s' % getattr(AccountCommands, 'RES_CACHE', 'MISSING'))
+            LOG_DEBUG('CAMO DEBUG: RES_SUCCESS = %s' % getattr(AccountCommands, 'RES_SUCCESS', 'MISSING'))
+        except Exception as e:
+            pass
+    BigWorld.callback(1.0, _do_log)
+
+log_res_cache()
+
+def force_shop_costs():
+    try:
+        from account_helpers.Shop import Shop
+        _orig_getCamouflageCost = Shop.getCamouflageCost
+        _orig_getPlayerEmblemCost = Shop.getPlayerEmblemCost
+        _orig_getPlayerInscriptionCost = Shop.getPlayerInscriptionCost
+        
+        def _getCamouflageCost(self, callback):
+            costs = {7: (50000, False), 30: (100000, False), 0: (100, True)}
+            if callback: callback(0, costs, 0)
+            
+        def _getPlayerEmblemCost(self, callback):
+            costs = {7: (50000, False), 30: (100000, False), 0: (100, True)}
+            if callback: callback(0, costs, 0)
+            
+        def _getPlayerInscriptionCost(self, callback):
+            costs = {7: (50000, False), 30: (100000, False), 0: (100, True)}
+            if callback: callback(0, costs, 0)
+            
+        Shop.getCamouflageCost = _getCamouflageCost
+        Shop.getPlayerEmblemCost = _getPlayerEmblemCost
+        Shop.getPlayerInscriptionCost = _getPlayerInscriptionCost
+    except Exception as e:
+        pass
+
+force_shop_costs()
