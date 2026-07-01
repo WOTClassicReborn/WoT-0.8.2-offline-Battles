@@ -28,7 +28,6 @@ def load_mods():
                 sn = fn.rsplit('.', 1)[0]
                 if sn == '__init__' or sn in loaded:
                     continue
-                loaded.add(sn)
                 full_name = 'gui.mods.' + sn
                 try:
                     LOG_DEBUG('GUI mod found', sn, suffix)
@@ -47,6 +46,7 @@ def load_mods():
                             raise
                     else:
                         exec 'import gui.mods.' + sn
+                    loaded.add(sn)
                 except Exception as e:
                     LOG_WARNING('A problem had occurred while importing GUI mod', sn)
                     LOG_CURRENT_EXCEPTION()

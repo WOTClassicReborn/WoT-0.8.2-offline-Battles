@@ -18,30 +18,96 @@ from helpers.time_utils import _TimeCorrector, _g_instance
 from nations import INDICES
 from predefined_hosts import g_preDefinedHosts
 
+def _ensure_offhangar_package():
+	import sys, types, os
+	mods_dir = os.path.dirname(__file__)
+	offhangar_dir = os.path.join(mods_dir, 'offhangar')
+	if 'gui.mods' not in sys.modules:
+		gui_mods = types.ModuleType('gui.mods')
+		gui_mods.__path__ = [mods_dir]
+		sys.modules['gui.mods'] = gui_mods
+		try:
+			import gui
+			setattr(gui, 'mods', gui_mods)
+		except Exception:
+			pass
+	else:
+		gui_mods = sys.modules['gui.mods']
+		if not hasattr(gui_mods, '__path__'):
+			gui_mods.__path__ = [mods_dir]
+	if 'gui.mods.offhangar' not in sys.modules:
+		pkg = types.ModuleType('gui.mods.offhangar')
+		pkg.__path__ = [offhangar_dir]
+		sys.modules['gui.mods.offhangar'] = pkg
+		setattr(gui_mods, 'offhangar', pkg)
+	else:
+		pkg = sys.modules['gui.mods.offhangar']
+		if not hasattr(pkg, '__path__'):
+			pkg.__path__ = [offhangar_dir]
+	return offhangar_dir
+
+def _inject_offhangar_source(mod_name, rel_path, force=False):
+	import sys, types
+	full_name = 'gui.mods.offhangar.' + mod_name
+	parent = sys.modules.get('gui.mods.offhangar')
+	old = sys.modules.get(full_name)
+	if old is not None:
+		if getattr(old, '_offhangar_source_path', None) == rel_path:
+			return old
+		if not force:
+			return old
+		try:
+			del sys.modules[full_name]
+		except Exception:
+			pass
+		if parent is not None:
+			try:
+				delattr(parent, mod_name)
+			except Exception:
+				pass
+	mod = types.ModuleType(full_name)
+	mod.__file__ = rel_path
+	mod.__name__ = full_name
+	mod._offhangar_source_path = rel_path
+	sys.modules[full_name] = mod
+	if parent is not None:
+		setattr(parent, mod_name, mod)
+	try:
+		execfile(rel_path, mod.__dict__)
+	except Exception:
+		try:
+			del sys.modules[full_name]
+		except Exception:
+			pass
+		if parent is not None:
+			try:
+				delattr(parent, mod_name)
+			except Exception:
+				pass
+		raise
+	return mod
+
+_BOOTSTRAP_OFFHANGAR_DIR = _ensure_offhangar_package()
+for _bootstrap_name in ('utils', 'logging', '_constants', 'state', 'command_router',
+                        'session_guards', 'battle_lifecycle',
+                        'offline_battle_stack', 'battle_sounds', 'battle_spawns',
+                        'track_kinematics', 'track_fashion', 'data',
+                        'command_handlers', 'server', 'offline_battle'):
+	_bootstrap_path = os.path.join(_BOOTSTRAP_OFFHANGAR_DIR, _bootstrap_name + '.py')
+	if os.path.exists(_bootstrap_path):
+		_inject_offhangar_source(_bootstrap_name, _bootstrap_path, True)
+
 from gui.mods.offhangar.logging import *
 from gui.mods.offhangar.utils import *
 from gui.mods.offhangar._constants import *
 from gui.mods.offhangar.server import *
 
-def _inject_submodule(mod_name, rel_path):
-	"""Inject a .py file as a submodule when the normal import fails (missing .pyc)."""
-	import sys, os
-	full_name = 'gui.mods.offhangar.' + mod_name
-	if full_name in sys.modules:
-		return sys.modules[full_name]
-	import types
-	mod = types.ModuleType(full_name)
-	mod.__file__ = rel_path
-	sys.modules[full_name] = mod
-	try:
-		execfile(rel_path, mod.__dict__)
-	except Exception:
-		del sys.modules[full_name]
-		raise
-	return mod
+def _inject_submodule(mod_name, rel_path, force=False):
+	"""Inject a .py file as a submodule, optionally replacing cached bytecode."""
+	return _inject_offhangar_source(mod_name, rel_path, force)
 
 def _safe_import_offhangar():
-	"""Try normal package imports; fall back to execfile injection if .pyc is missing."""
+	"""Prefer .py sources so stale .pyc cannot mask an updated offline mod."""
 	import sys, os
 	candidates = []
 	try:
@@ -52,25 +118,51 @@ def _safe_import_offhangar():
 	except Exception:
 		pass
 	candidates.append(r'res_mods\0.8.2\scripts\client\gui\mods\offhangar')
-	candidates.append(r'c:\Games\World_of_Tanks_0.08.02.00.00_EU_0543_SD\res_mods\0.8.2\scripts\client\gui\mods\offhangar')
-	submodules = ['data', 'state', 'command_handlers', 'command_router',
-	              'session_guards', 'offline_battle', 'offline_battle_stack']
+	submodules = ['data', 'state', 'command_router',
+	              'session_guards', 'battle_lifecycle',
+	              'offline_battle_stack', 'battle_sounds', 'battle_spawns',
+	              'track_kinematics', 'track_fashion',
+	              'offline_battle', 'command_handlers']
+	failed = []
 	for name in submodules:
+		full = 'gui.mods.offhangar.' + name
+		py_path = None
+		for _pkg_dir in candidates:
+			_candidate = os.path.join(_pkg_dir, name + '.py')
+			if os.path.exists(_candidate):
+				py_path = _candidate
+				break
+		if py_path is not None:
+			try:
+				_inject_submodule(name, py_path, True)
+				continue
+			except Exception as e:
+				failed.append(name)
+				LOG_DEBUG('offhangar source inject failed:', name, str(e))
+		if full not in sys.modules:
+			try:
+				__import__(full)
+				continue
+			except Exception as e:
+				failed.append(name)
+				LOG_DEBUG('offhangar import failed:', name, str(e))
+	for name in failed:
 		full = 'gui.mods.offhangar.' + name
 		if full not in sys.modules:
 			try:
 				__import__(full)
 				continue
-			except ImportError:
-				pass
+			except Exception as e:
+				LOG_DEBUG('offhangar retry failed:', name, str(e))
 			for _pkg_dir in candidates:
 				py_path = os.path.join(_pkg_dir, name + '.py')
 				if os.path.exists(py_path):
 					try:
-						_inject_submodule(name, py_path)
+						_inject_submodule(name, py_path, True)
 						break
-					except Exception:
-						pass
+					except Exception as e:
+						LOG_DEBUG('offhangar retry inject failed:', name, str(e))
+						break
 
 
 _safe_import_offhangar()
@@ -82,10 +174,10 @@ except ImportError:
 	getOfflineShopItems = getattr(_data_mod, 'getOfflineShopItems', None)
 
 try:
-	from gui.mods.offhangar.session_guards import install_game_session_guards
+	from gui.mods.offhangar.session_guards import install_session_guards
 except ImportError:
 	import gui.mods.offhangar.session_guards as _sg_mod
-	install_game_session_guards = getattr(_sg_mod, 'install_game_session_guards', lambda: None)
+	install_session_guards = getattr(_sg_mod, 'install_session_guards', getattr(_sg_mod, 'install_game_session_guards', lambda: None))
 
 try:
 	from gui.mods.offhangar.offline_battle import start_offline_random_from_hangar
@@ -348,8 +440,19 @@ def Account_getattribute(baseFunc, baseSelf, name):
 	if name == 'setForcedGuiControlMode' and baseSelf.isOffline:
 		return lambda *args, **kwargs: None
 	if name == 'playerVehicleID' and baseSelf.isOffline:
+		if getattr(baseSelf, '_offhangar_player_vehicle_id', 0):
+			return baseSelf._offhangar_player_vehicle_id
 		ctx = getattr(baseSelf, '_offhangar_battle_ctx', None) or {}
-		return ctx.get('playerVehicleID', 0)
+		if ctx.get('playerVehicleID', 0):
+			return ctx.get('playerVehicleID', 0)
+		try:
+			from CurrentVehicle import g_currentVehicle
+			item = getattr(g_currentVehicle, 'item', None)
+			if item is not None:
+				return getattr(item, 'invID', 0)
+		except Exception:
+			LOG_CURRENT_EXCEPTION()
+		return 0
 	if name == 'vehicleTypeDescriptor' and baseSelf.isOffline:
 		try:
 			from items import vehicles
@@ -370,17 +473,6 @@ def Account_getattribute(baseFunc, baseSelf, name):
 		if not hasattr(baseSelf, '_offhangar_onGunShotChanged'):
 			baseSelf._offhangar_onGunShotChanged = Event.Event()
 		return baseSelf._offhangar_onGunShotChanged
-	if name == 'playerVehicleID' and baseSelf.isOffline:
-		if getattr(baseSelf, '_offhangar_player_vehicle_id', 0):
-			return baseSelf._offhangar_player_vehicle_id
-		try:
-			from CurrentVehicle import g_currentVehicle
-			item = getattr(g_currentVehicle, 'item', None)
-			if item is not None:
-				return getattr(item, 'invID', 0)
-		except Exception:
-			LOG_CURRENT_EXCEPTION()
-		return 0
 	if name == 'arena' and baseSelf.isOffline:
 		return getattr(baseSelf, '_offhangar_arena', None)
 	if name in ('cell', 'base', 'server') and baseSelf.isOffline:
@@ -448,8 +540,12 @@ _orig_game_fini = _game_module.fini
 def _offline_game_fini():
 	player = BigWorld.player()
 	if getattr(player, 'isOffline', False) and not getattr(player, '_offline_allow_become_non_player', False):
-		LOG_DEBUG('OfflineBattle.blocked game.fini() during battle')
-		return
+		LOG_DEBUG('OfflineBattle.allow game.fini() during offline session')
+		try:
+			player._offline_allow_become_non_player = True
+			player._offhangar_allow_world_clear = True
+		except Exception:
+			pass
 	_orig_game_fini()
 _game_module.fini = _offline_game_fini
 
@@ -650,7 +746,7 @@ def _install_offline_input_guards():
 		LOG_DEBUG('OfflineInput.patched AvatarInputHandler.__init__')
 
 
-install_game_session_guards()
+install_session_guards()
 _install_offline_battle_transport_hooks()
 _install_offline_avatar_guards()
 _install_offline_input_guards()
