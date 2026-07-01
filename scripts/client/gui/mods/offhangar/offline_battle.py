@@ -1055,7 +1055,72 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 		}
 
 		_engine_state = {'init': False, 'snd1': None, 'snd2': None}
-		
+
+		def _stop_sound_handle(sound):
+			if sound is None:
+				return
+			try:
+				sound.stop()
+			except Exception:
+				pass
+
+		def _stop_vehicle_sounds(holder):
+			if holder is None:
+				return
+			try:
+				_stop_sound_handle(getattr(holder, '_engine_sound', None))
+				_stop_sound_handle(getattr(holder, '_chassis_sound', None))
+				holder._engine_sound = None
+				holder._chassis_sound = None
+				holder._engine_sounds_init = False
+			except Exception:
+				pass
+
+		def _init_vehicle_sounds(holder, root_model, veh_td):
+			if holder is None or root_model is None or veh_td is None:
+				return
+			if getattr(holder, '_engine_sounds_init', False):
+				return
+			try:
+				if not getattr(root_model, 'inWorld', False):
+					return
+				engine_dict = getattr(veh_td, 'engine', None)
+				chassis_dict = getattr(veh_td, 'chassis', None)
+				started = False
+				if engine_dict and 'sound' in engine_dict:
+					holder._engine_sound = root_model.playSound(engine_dict['sound'])
+					started = True
+				if chassis_dict and 'sound' in chassis_dict:
+					holder._chassis_sound = root_model.playSound(chassis_dict['sound'])
+					started = True
+				holder._engine_sounds_init = started
+				if started:
+					LOG_DEBUG('OfflineBattle: vehicle engine sounds attached')
+			except Exception as e:
+				LOG_DEBUG('OfflineBattle: vehicle engine sounds failed:', str(e))
+
+		def _set_sound_param(sound, param_name, value):
+			if sound is None:
+				return
+			try:
+				param = sound.param(param_name)
+				if param:
+					param.value = value
+			except Exception:
+				pass
+
+		def _update_vehicle_sounds(holder, speed, max_speed, throttle):
+			if holder is None:
+				return
+			try:
+				max_speed = max(float(max_speed), 0.1)
+				speed_ratio = min(1.0, abs(float(speed)) / max_speed)
+				load = min(1.0, speed_ratio + 0.2 + abs(float(throttle)) * 0.3)
+				_set_sound_param(getattr(holder, '_engine_sound', None), 'load', load)
+				_set_sound_param(getattr(holder, '_chassis_sound', None), 'speed', speed_ratio)
+			except Exception:
+				pass
+
 		_veh_velocity = [0.0]        # m/s, forward speed
 		_veh_turn_velocity = [0.0]   # rad/s, current hull rotation speed
 		_last_tick_time = [BigWorld.time()]
@@ -2033,6 +2098,13 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								# NO ENEMIES! STOP!
 								m_veh._veh_velocity = max(0.0, m_veh._veh_velocity - 20.0 * dt)
 								m_veh._veh_turn_velocity = 0.0
+								_bot_tf = getattr(m_veh, '_track_fashion', None)
+								if _bot_tf is not None:
+									try:
+										_bot_tf.update(dt, 0.0, 0.0)
+									except Exception:
+										pass
+								_update_vehicle_sounds(m_veh, m_veh._veh_velocity, getattr(m_veh, '_engine_max_speed', 10.0), 0.0)
 								continue
 							dx = target_pos[0] - m_veh.position.x
 							dz = target_pos[2] - m_veh.position.z
@@ -2067,7 +2139,8 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 									bot_chassisRotSpd = _rotation_speed_to_radians(_td.physics['rotationSpeedLimit'])
 							except Exception:
 								pass
-							
+							m_veh._engine_max_speed = bot_speedFwd
+
 							# VIRTUAL DRIVER
 							throttle = 0.0
 							turn_dir = 0
@@ -2131,7 +2204,14 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								m_veh._veh_velocity = -bot_speedBwd
 							if throttle == 0 and abs(m_veh._veh_velocity) < 0.05:
 								m_veh._veh_velocity = 0.0
-							
+
+							try:
+								_root_model = getattr(m_veh, '_chassis_model', None) or getattr(m_veh, 'model', None)
+								_init_vehicle_sounds(m_veh, _root_model, _td)
+								_update_vehicle_sounds(m_veh, m_veh._veh_velocity, bot_speedFwd, throttle)
+							except Exception:
+								pass
+
 							if m_veh._veh_velocity != 0.0:
 								if _check_horizontal_collision(player.spaceID, m_veh.position, m_veh.yaw, m_veh._veh_velocity, _td):
 									m_veh._veh_velocity = 0.0
@@ -2273,8 +2353,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 										if _shots:
 											_shot = _shots[0]
 											try:
-												_shell = _shot.get('shell', {})
-												play_gunshot(getattr(m_veh, 'model', None) or getattr(m_veh, '_chassis_model', None), _shell.get('caliber', 75.0))
+												play_gunshot(getattr(m_veh, 'model', None) or getattr(m_veh, '_chassis_model', None), _td.gun, 0)
 											except Exception:
 												pass
 											_effectsDescr = vehicles.g_cache.shotEffects[_shot['shell']['effectsIndex']]
@@ -2415,6 +2494,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 																		if not getattr(_d_ch, 'loaded', True) or not getattr(_d_hu, 'loaded', True) or not getattr(_d_tu, 'loaded', True) or not getattr(_d_gu, 'loaded', True):
 																			BigWorld.callback(0.1, _swap_destroyed_model_bot)
 																			return
+																		_stop_vehicle_sounds(m_veh)
 																		try: BigWorld.delModel(_old_ch_ref)
 																		except: pass
 																		_d_ch.position = _old_pos
@@ -2526,6 +2606,11 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							def _swap_player_destroyed(_d_ch=_d_ch, _d_hu=_d_hu, _d_tu=_d_tu, _d_gu=_d_gu):
 								try:
 									# Step 1: Remove live chassis from scene (hull/turret/gun are attached children)
+									_stop_sound_handle(_engine_state.get('snd1', None))
+									_stop_sound_handle(_engine_state.get('snd2', None))
+									_engine_state['snd1'] = None
+									_engine_state['snd2'] = None
+									_engine_state['init'] = False
 									_live_chassis = loaded_models.get('chassis') or loaded_models.get('hull')
 									if _live_chassis is not None:
 										try:
@@ -3071,6 +3156,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 									if not getattr(_d_ch, 'loaded', True) or not getattr(_d_hu, 'loaded', True) or not getattr(_d_tu, 'loaded', True) or not getattr(_d_gu, 'loaded', True):
 										BigWorld.callback(0.1, _swap_destroyed_model)
 										return
+									_stop_vehicle_sounds(enemy_mock)
 									try: BigWorld.delModel(_old_ch_ref)
 									except: pass
 									_d_ch.position = _old_pos
@@ -3112,26 +3198,11 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							elif hasattr(eff, 'effectsList'):
 								player_eff = EffectsList.EffectsListPlayer(eff.effectsList, eff.keyPoints)
 								player_eff.play(mock_veh.model, m_pos, dir_vec)
-						# Forcibly play gunshot sound based on caliber
+						# Play gunshot through the shared descriptor-aware sound mapper.
 						try:
-							caliber = 75
-							if td and hasattr(td, 'gun') and 'shots' in td.gun:
-								caliber = td.gun['shots'][0]['shell']['caliber']
-							
-							if caliber > 120:
-								sound_event = '/tanks/guns/gun_huge/gun_huge_152mm'
-							elif caliber > 100:
-								sound_event = '/tanks/guns/gun_large/gun_large_115-152mm'
-							elif caliber > 75:
-								sound_event = '/tanks/guns/gun_main/gun_main_85-107mm'
-							elif caliber > 45:
-								sound_event = '/tanks/guns/gun_medium/gun_medium_50-75mm'
-							else:
-								sound_event = '/tanks/guns/gun_small/gun_small_20-45mm'
-							
 							root_model = loaded_models.get('chassis') or loaded_models.get('hull') or loaded_models.get('turret') or loaded_models.get('gun')
-							if root_model is not None:
-								root_model.playSound(sound_event)
+							if root_model is not None and td and hasattr(td, 'gun'):
+								play_gunshot(root_model, td.gun, _gun_state.get('shot_index', 0))
 						except Exception as e: pass
 					except Exception as e: pass
 						
@@ -3443,6 +3514,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							e_mock._turret_model = tu
 							e_mock._gun_model = gu
 							e_mock._t_mat = t_mat
+							_init_vehicle_sounds(e_mock, ch, td)
 							class FakeEnemyAppearance(object):
 								def __init__(self):
 									from Event import Event
@@ -3567,7 +3639,8 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 									player.arena.period = 2
 									player.arena.periodLength = _prebattle_time
 									player.arena.periodEndTime = BigWorld.serverTime() + _prebattle_time
-									player.arena.onPeriodChange(2, player.arena.periodEndTime, _prebattle_time, 0)
+									player.arena.periodAdditionalInfo = {}
+									player.arena.onPeriodChange(2, player.arena.periodEndTime, _prebattle_time, {})
 									
 									# Switch to Battle Mode
 									def _start_battle():
@@ -3575,7 +3648,8 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 											player.arena.period = 3
 											player.arena.periodLength = _battle_duration
 											player.arena.periodEndTime = BigWorld.serverTime() + _battle_duration
-											player.arena.onPeriodChange(3, player.arena.periodEndTime, _battle_duration, 0)
+											player.arena.periodAdditionalInfo = {}
+											player.arena.onPeriodChange(3, player.arena.periodEndTime, _battle_duration, {})
 											try:
 												start_combat_audio(player)
 											except Exception as e: LOG_DEBUG('CRITICAL ERROR IN K KEY:', e); import traceback; LOG_DEBUG(traceback.format_exc())

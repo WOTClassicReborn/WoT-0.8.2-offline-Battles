@@ -144,7 +144,7 @@ class TrackFashionController(object):
         self._animation_speed_scale = 0.65
         self._track_accel_tau = 0.38
         self._track_follow_tau = 0.16
-        self._track_stop_tau = 0.32
+        self._track_stop_tau = 0.12
         self._track_reverse_tau = 0.10
         LOG_DEBUG('[tracks] smooth filter scale=', self._animation_speed_scale,
                   'tau accel=', self._track_accel_tau,
@@ -158,7 +158,17 @@ class TrackFashionController(object):
         try:
             dt = max(0.0, min(float(dt), 0.05))
             target_v = float(v)
-            target_left, target_right = track_speeds(target_v, float(omega), self._half_width)
+            target_omega = float(omega)
+            if abs(target_v) < 0.02 and abs(target_omega) < 0.01:
+                self._visual_forward = 0.0
+                self._visual_left = 0.0
+                self._visual_right = 0.0
+                self._set(movement_info(0.0, 0.0, 0.0))
+                return
+            track_v = target_v
+            if abs(target_v) < 0.15 and abs(target_omega) > 0.02:
+                track_v = 0.0
+            target_left, target_right = track_speeds(track_v, target_omega, self._half_width)
             self._visual_left = _smooth_value(
                 self._visual_left, target_left, dt,
                 self._track_accel_tau, self._track_follow_tau,
@@ -168,14 +178,14 @@ class TrackFashionController(object):
                 self._track_accel_tau, self._track_follow_tau,
                 self._track_stop_tau, self._track_reverse_tau)
             self._visual_forward = _smooth_value(
-                self._visual_forward, target_v, dt,
+                self._visual_forward, track_v, dt,
                 self._track_accel_tau, self._track_follow_tau,
                 self._track_stop_tau, self._track_reverse_tau)
-            if abs(self._visual_left) < 0.03 and abs(target_left) < 0.03:
+            if abs(self._visual_left) < 0.08 and abs(target_left) < 0.03:
                 self._visual_left = 0.0
-            if abs(self._visual_right) < 0.03 and abs(target_right) < 0.03:
+            if abs(self._visual_right) < 0.08 and abs(target_right) < 0.03:
                 self._visual_right = 0.0
-            if abs(self._visual_forward) < 0.03 and abs(target_v) < 0.03:
+            if abs(self._visual_forward) < 0.08 and abs(track_v) < 0.03:
                 self._visual_forward = 0.0
             self._set(movement_info(
                 self._visual_forward * self._animation_speed_scale,

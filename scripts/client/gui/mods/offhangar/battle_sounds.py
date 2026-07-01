@@ -1,5 +1,10 @@
 from gui.mods.offhangar.logging import LOG_DEBUG
 
+try:
+	_STRING_TYPES = (basestring,)
+except NameError:
+	_STRING_TYPES = (str,)
+
 
 def _safe_call(obj, name, *args):
 	try:
@@ -226,12 +231,98 @@ def play_vehicle_sound(model, event_name):
 		return False
 
 
+def _sound_event_from_value(value):
+	if value is None:
+		return ''
+	try:
+		if isinstance(value, _STRING_TYPES):
+			value = str(value)
+			if value.startswith('/tanks/guns/') or value.startswith('gun_') or '/guns/' in value:
+				return value
+			return ''
+	except Exception:
+		pass
+	try:
+		if isinstance(value, (tuple, list)):
+			for item in value:
+				event_name = _sound_event_from_value(item)
+				if event_name:
+					return event_name
+	except Exception:
+		pass
+	try:
+		if hasattr(value, 'get'):
+			for key in ('shotSound', 'shootSound', 'fireSound', 'sound', 'event', 'eventName', 'name'):
+				event_name = _sound_event_from_value(value.get(key, None))
+				if event_name:
+					return event_name
+	except Exception:
+		pass
+	for attr_name in ('shotSound', 'shootSound', 'fireSound', 'sound', 'event', 'eventName', 'name'):
+		try:
+			event_name = _sound_event_from_value(getattr(value, attr_name, None))
+			if event_name:
+				return event_name
+		except Exception:
+			pass
+	return ''
+
+
+def _shot_from_gun(gun_descr, shot_index):
+	try:
+		shots = gun_descr.get('shots', [])
+	except Exception:
+		shots = []
+	try:
+		if not shots and hasattr(gun_descr, 'shots'):
+			shots = gun_descr.shots
+	except Exception:
+		pass
+	if not shots:
+		return None
+	try:
+		shot_index = int(shot_index)
+	except Exception:
+		shot_index = 0
+	if shot_index < 0:
+		shot_index = 0
+	if shot_index >= len(shots):
+		shot_index = len(shots) - 1
+	return shots[shot_index]
+
+
+def gun_sound_event_from_descriptor(gun_descr, shot_index=0):
+	for key in ('shotSound', 'shootSound', 'fireSound', 'sound', 'effects'):
+		try:
+			event_name = _sound_event_from_value(gun_descr.get(key, None))
+			if event_name:
+				return event_name
+		except Exception:
+			pass
+	shot = _shot_from_gun(gun_descr, shot_index)
+	shell = {}
+	if shot is not None:
+		try:
+			shell = shot.get('shell', {}) or {}
+		except Exception:
+			shell = {}
+		try:
+			from items import vehicles
+			effects_descr = vehicles.g_cache.shotEffects[shell['effectsIndex']]
+			event_name = _sound_event_from_value(effects_descr)
+			if event_name:
+				return event_name
+		except Exception:
+			pass
+	return gun_sound_event(shell.get('caliber', 75.0) if hasattr(shell, 'get') else 75.0)
+
+
 def gun_sound_event(caliber):
 	try:
 		caliber = float(caliber)
 	except Exception:
 		caliber = 75.0
-	if caliber > 120:
+	if caliber >= 150:
 		return '/tanks/guns/gun_huge/gun_huge_152mm'
 	if caliber > 100:
 		return '/tanks/guns/gun_large/gun_large_115-152mm'
@@ -242,5 +333,10 @@ def gun_sound_event(caliber):
 	return '/tanks/guns/gun_small/gun_small_20-45mm'
 
 
-def play_gunshot(model, caliber):
-	return play_vehicle_sound(model, gun_sound_event(caliber))
+def play_gunshot(model, caliber_or_gun_descr, shot_index=0):
+	try:
+		if hasattr(caliber_or_gun_descr, 'get'):
+			return play_vehicle_sound(model, gun_sound_event_from_descriptor(caliber_or_gun_descr, shot_index))
+	except Exception:
+		pass
+	return play_vehicle_sound(model, gun_sound_event(caliber_or_gun_descr))

@@ -218,14 +218,36 @@ class _OfflineArenaStub(object):
 			self.minimap = None
 
 	class _EventStub(object):
+		def __init__(self, dispatch=False):
+			self._handlers = []
+			self._dispatch = dispatch
+
 		def __iadd__(self, other):
+			if callable(other) and other not in self._handlers:
+				self._handlers.append(other)
 			return self
 
 		def __isub__(self, other):
+			try:
+				if other in self._handlers:
+					self._handlers.remove(other)
+			except Exception:
+				pass
 			return self
 
 		def __call__(self, *args, **kwargs):
-			return
+			if not self._dispatch:
+				return
+			for handler in list(self._handlers):
+				try:
+					handler(*args, **kwargs)
+				except TypeError:
+					try:
+						handler()
+					except Exception:
+						LOG_CURRENT_EXCEPTION()
+				except Exception:
+					LOG_CURRENT_EXCEPTION()
 
 	def __init__(self):
 		self.vehicles = {}
@@ -247,7 +269,7 @@ class _OfflineArenaStub(object):
 				return 0
 		if name.startswith('on'):
 			if name not in self._event_stubs:
-				self._event_stubs[name] = self._EventStub()
+				self._event_stubs[name] = self._EventStub(name == 'onPeriodChange')
 			return self._event_stubs[name]
 		return 0
 
