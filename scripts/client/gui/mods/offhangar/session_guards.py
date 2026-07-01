@@ -1,10 +1,29 @@
 from GameSessionController import _GameSessionController
 
+from gui.mods.offhangar._constants import CONFIG_OPTIONS
 from gui.mods.offhangar.logging import LOG_DEBUG
 from gui.mods.offhangar.utils import override
 
 
 FORCE_ALLOW_BATTLE_ENTRY = False
+_SESSION_GUARDS_INSTALLED = False
+_SESSION_PATCHES = set()
+_DEBUG_SESSION_PATCHES = bool(CONFIG_OPTIONS.get('enable_debug_session_patches', False))
+
+
+def _install_once(name, installer):
+	if name in _SESSION_PATCHES:
+		return
+	try:
+		installer()
+		_SESSION_PATCHES.add(name)
+		LOG_DEBUG('SessionGuard.installed', name)
+	except Exception:
+		try:
+			from debug_utils import LOG_CURRENT_EXCEPTION
+			LOG_CURRENT_EXCEPTION()
+		except Exception:
+			pass
 
 
 def normalize_offline_stats(stats):
@@ -223,9 +242,6 @@ def install_dossier_guard():
         from debug_utils import LOG_CURRENT_EXCEPTION
         LOG_CURRENT_EXCEPTION()
 
-install_dossier_guard()
-
-
 def install_sync_data_guard():
     """
     Patch AccountSyncData.waitForSync so that in offline mode it immediately
@@ -254,9 +270,6 @@ def install_sync_data_guard():
     except Exception:
         from debug_utils import LOG_CURRENT_EXCEPTION
         LOG_CURRENT_EXCEPTION()
-
-install_sync_data_guard()
-
 
 def install_stats_defaults_guard():
     """
@@ -321,9 +334,6 @@ def install_stats_defaults_guard():
         from debug_utils import LOG_CURRENT_EXCEPTION
         LOG_CURRENT_EXCEPTION()
 
-install_stats_defaults_guard()
-
-
 def install_customization_guard():
     try:
         from gui.Scaleform.customization.BaseTimedCustomizationInterface import BaseTimedCustomizationInterface
@@ -352,9 +362,6 @@ def install_customization_guard():
     except Exception:
         pass
 
-install_customization_guard()
-
-
 def log_credits():
     try:
         from gui.mods.offhangar.logging import LOG_DEBUG
@@ -365,11 +372,6 @@ def log_credits():
             BigWorld.player().stats.get('credits', cb)
     except Exception as e:
         pass
-
-import BigWorld
-if hasattr(BigWorld, 'callback'):
-    BigWorld.callback(5.0, log_credits)
-
 
 def install_all_sync_guards():
     try:
@@ -407,10 +409,6 @@ def install_all_sync_guards():
     except Exception:
         pass
 
-install_all_sync_guards()
-
-install_game_session_guards()
-
 def patch_inventory_setAndFillLayouts():
     try:
         import AccountCommands
@@ -423,7 +421,6 @@ def patch_inventory_setAndFillLayouts():
         Inventory._Inventory__setAndFillLayouts_onShopSynced = _patched
     except Exception:
         pass
-patch_inventory_setAndFillLayouts()
 
 
 def patch_check_credits_requester():
@@ -445,7 +442,6 @@ def log_requester_on_login():
         _orig(self, *args, **kwargs)
         BigWorld.callback(2.0, patch_check_credits_requester)
     Account.PlayerAccount.onBecomePlayer = _patched
-log_requester_on_login()
 
 def patch_technical_maintenance():
     from gui.Scaleform.TechnicalMaintenance import TechnicalMaintenance
@@ -462,8 +458,6 @@ def patch_technical_maintenance():
             pass
     TechnicalMaintenance.populateUI = _patched_populateUI
 
-patch_technical_maintenance()
-
 def patch_technical_maintenance_credits():
     from gui.Scaleform.TechnicalMaintenance import TechnicalMaintenance
     _orig_populateUI = TechnicalMaintenance.populateUI
@@ -477,8 +471,6 @@ def patch_technical_maintenance_credits():
             from debug_utils import LOG_CURRENT_EXCEPTION
             LOG_CURRENT_EXCEPTION()
     TechnicalMaintenance.populateUI = _patched_populateUI
-
-patch_technical_maintenance_credits()
 
 def patch_tech_maintenance_update():
     from gui.Scaleform.TechnicalMaintenance import TechnicalMaintenance
@@ -498,8 +490,6 @@ def patch_tech_maintenance_update():
             LOG_CURRENT_EXCEPTION()
     TechnicalMaintenance.populateUI = _patched_populateUI
 
-patch_tech_maintenance_update()
-
 def test_stats_credits():
     from gui.Scaleform.TechnicalMaintenance import TechnicalMaintenance
     _orig_populateUI = TechnicalMaintenance.populateUI
@@ -512,7 +502,6 @@ def test_stats_credits():
             self.uiHolder.call('techMaintenance.setCredits', [100000000])
         except: pass
     TechnicalMaintenance.populateUI = _patched_populateUI
-test_stats_credits()
 
 def patch_tech_maintenance_force_credits():
     from gui.Scaleform.TechnicalMaintenance import TechnicalMaintenance
@@ -525,8 +514,6 @@ def patch_tech_maintenance_force_credits():
         except: pass
     TechnicalMaintenance.populateUI = _patched_populateUI
 
-patch_tech_maintenance_force_credits()
-
 def patch_tech_maintenance_log_price():
     from gui.Scaleform.TechnicalMaintenance import TechnicalMaintenance
     _orig_populate = TechnicalMaintenance.onPopulateTechnicalMaintenance
@@ -538,8 +525,6 @@ def patch_tech_maintenance_log_price():
         return res
     TechnicalMaintenance.onPopulateTechnicalMaintenance = _patched_populate
 
-patch_tech_maintenance_log_price()
-
 def loop_credits_update():
     from gui.ClientUpdateManager import g_clientUpdateManager
     import BigWorld
@@ -550,15 +535,11 @@ def loop_credits_update():
             pass
         BigWorld.callback(1.0, _loop)
     _loop()
-import BigWorld
-BigWorld.callback(5.0, loop_credits_update)
 
 def patch_shop_requester():
     from gui.Scaleform.utils.requesters import ShopRequester
     ShopRequester.isEnabledBuyingGoldShellsForCredits = property(lambda self: True)
     ShopRequester.isEnabledBuyingGoldEqsForCredits = property(lambda self: True)
-
-patch_shop_requester()
 
 def print_stats_cache():
     import BigWorld
@@ -567,8 +548,6 @@ def print_stats_cache():
         LOG_DEBUG('---- CACHE KEYS ----', BigWorld.player().stats._Stats__cache.keys())
         LOG_DEBUG('---- CACHE CREDITS ----', BigWorld.player().stats._Stats__cache.get('credits'))
     BigWorld.player().stats.getCache(_cb)
-import BigWorld
-BigWorld.callback(3.0, print_stats_cache)
 
 def patch_stats_requesterr_hardcode():
     try:
@@ -576,8 +555,6 @@ def patch_stats_requesterr_hardcode():
         StatsRequesterr.credits = property(lambda self: 100000000)
         StatsRequesterr.gold = property(lambda self: 1000000)
     except: pass
-
-patch_stats_requesterr_hardcode()
 
 def patch_resolve_selected_compact_descr():
     try:
@@ -593,7 +570,6 @@ def patch_resolve_selected_compact_descr():
             return res
         offline_battle_stack._resolve_selected_compact_descr = _patched
     except: pass
-patch_resolve_selected_compact_descr()
 
 def fix_offline_battle_crashes():
     try:
@@ -632,8 +608,6 @@ def fix_offline_battle_crashes():
     except Exception as e:
         pass
 
-fix_offline_battle_crashes()
-
 def patch_captcha_view():
     try:
         from gui.Scaleform.CaptchaView import CaptchaView
@@ -646,7 +620,6 @@ def patch_captcha_view():
         CaptchaView.showCaptcha = _mock_showCaptcha
     except Exception:
         pass
-patch_captcha_view()
 
 def patch_stats_requesterr_captcha():
     try:
@@ -659,7 +632,6 @@ def patch_stats_requesterr_captcha():
             return 99
         StatsRequesterr.battlesTillCaptcha = _mock_btc
     except: pass
-patch_stats_requesterr_captcha()
 
 def patch_data_providers_defcost():
     try:
@@ -678,8 +650,6 @@ def patch_data_providers_defcost():
         EmblemsDataProvider.__init__ = _safe_Emblem_init
     except Exception:
         pass
-
-patch_data_providers_defcost()
 
 def debug_construct_object():
     try:
@@ -707,8 +677,6 @@ def debug_construct_object():
     except Exception as e:
         pass
 
-debug_construct_object()
-
 def debug_onrequestlist():
     try:
         from gui.scaleform.customization.data_providers import CamouflagesDataProvider
@@ -724,8 +692,6 @@ def debug_onrequestlist():
         CamouflagesDataProvider.onRequestList = _patched_onrequest
     except Exception as e:
         pass
-
-debug_onrequestlist()
 
 def debug_groups_buildlist():
     try:
@@ -750,8 +716,6 @@ def debug_groups_buildlist():
     except Exception as e:
         pass
 
-debug_groups_buildlist()
-
 def debug_ongetpackagescost():
     try:
         from gui.scaleform.customization.data_providers import RentalPackageDataProviderBase
@@ -766,8 +730,6 @@ def debug_ongetpackagescost():
     except Exception as e:
         pass
 
-debug_ongetpackagescost()
-
 def log_res_cache():
     import BigWorld
     def _do_log():
@@ -779,8 +741,6 @@ def log_res_cache():
         except Exception as e:
             pass
     BigWorld.callback(1.0, _do_log)
-
-log_res_cache()
 
 def force_shop_costs():
     try:
@@ -807,4 +767,53 @@ def force_shop_costs():
     except Exception as e:
         pass
 
-force_shop_costs()
+
+def install_session_guards():
+	global _SESSION_GUARDS_INSTALLED
+	if _SESSION_GUARDS_INSTALLED:
+		return
+	_SESSION_GUARDS_INSTALLED = True
+
+	_install_once('game_session', install_game_session_guards)
+	_install_once('dossier', install_dossier_guard)
+	_install_once('sync_data', install_sync_data_guard)
+	_install_once('stats_defaults', install_stats_defaults_guard)
+	_install_once('customization', install_customization_guard)
+	_install_once('all_sync', install_all_sync_guards)
+	_install_once('inventory_layout_log', patch_inventory_setAndFillLayouts)
+	_install_once('requester_login_probe', log_requester_on_login)
+	_install_once('technical_maintenance', patch_technical_maintenance)
+	_install_once('technical_maintenance_credits', patch_technical_maintenance_credits)
+	_install_once('technical_maintenance_update', patch_tech_maintenance_update)
+	_install_once('technical_maintenance_force_credits', patch_tech_maintenance_force_credits)
+	_install_once('technical_maintenance_log_price', patch_tech_maintenance_log_price)
+	_install_once('shop_requester', patch_shop_requester)
+	_install_once('stats_requester_hardcode', patch_stats_requesterr_hardcode)
+	_install_once('resolve_selected_compact_descr', patch_resolve_selected_compact_descr)
+	_install_once('offline_battle_crashes', fix_offline_battle_crashes)
+	_install_once('captcha_view', patch_captcha_view)
+	_install_once('stats_requester_captcha', patch_stats_requesterr_captcha)
+	_install_once('customization_default_cost', patch_data_providers_defcost)
+	_install_once('force_shop_costs', force_shop_costs)
+
+	try:
+		import BigWorld
+		if hasattr(BigWorld, 'callback'):
+			BigWorld.callback(5.0, log_credits)
+			BigWorld.callback(5.0, loop_credits_update)
+	except Exception:
+		pass
+
+	if _DEBUG_SESSION_PATCHES:
+		_install_once('test_stats_credits', test_stats_credits)
+		_install_once('debug_construct_object', debug_construct_object)
+		_install_once('debug_onrequestlist', debug_onrequestlist)
+		_install_once('debug_groups_buildlist', debug_groups_buildlist)
+		_install_once('debug_ongetpackagescost', debug_ongetpackagescost)
+		_install_once('log_res_cache', log_res_cache)
+		try:
+			import BigWorld
+			if hasattr(BigWorld, 'callback'):
+				BigWorld.callback(3.0, print_stats_cache)
+		except Exception:
+			pass

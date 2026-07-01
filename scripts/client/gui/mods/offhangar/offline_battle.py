@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Offline battle bootstrap for FakeServer.
 
@@ -8,6 +9,7 @@ Compatible checks keep this safe across 0.8.x builds that differ slightly.
 
 import time
 import cPickle
+import math
 from debug_utils import LOG_DEBUG, LOG_CURRENT_EXCEPTION
 
 g_offline_models = []
@@ -26,10 +28,68 @@ except Exception as e:
 	g_projectile_mover = None
 
 from gui.mods.offhangar.logging import LOG_DEBUG
+
+def _offhangar_load_track_modules():
+	import sys, os, types
+	base_dirs = []
+	try:
+		base_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+	except Exception:
+		pass
+	base_dirs.append('res_mods/0.8.2/scripts/client/gui/mods/offhangar')
+	for name in ('track_kinematics', 'track_fashion', 'battle_sounds', 'battle_spawns'):
+		full = 'gui.mods.offhangar.' + name
+		if full in sys.modules:
+			continue
+		try:
+			__import__(full)
+			continue
+		except ImportError:
+			pass
+		for d in base_dirs:
+			p = os.path.join(d, name + '.py')
+			if os.path.exists(p):
+				mod = types.ModuleType(full)
+				mod.__file__ = p
+				sys.modules[full] = mod
+				try:
+					execfile(p, mod.__dict__)
+				except Exception:
+					if full in sys.modules: del sys.modules[full]
+				break
+
+_offhangar_load_track_modules()
+try:
+	from gui.mods.offhangar.track_fashion import setup_track_fashion
+except Exception:
+	setup_track_fashion = None
+from gui.mods.offhangar.battle_sounds import (
+	play_gunshot,
+	play_notification,
+	play_result_audio,
+	start_combat_audio,
+	start_loading_audio,
+	stop_battle_audio
+)
+from gui.mods.offhangar.battle_spawns import resolve_bot_spawn, resolve_player_spawn
 from gui.mods.offhangar.offline_battle_stack import build_offline_battle_context
 
 _BATTLE_BOOT_DEBOUNCE_SEC = 1.5
 OFFLINE_BATTLE_ENABLED = True
+
+def _normalize_yaw(yaw):
+	while yaw > math.pi:
+		yaw -= 2.0 * math.pi
+	while yaw < -math.pi:
+		yaw += 2.0 * math.pi
+	return yaw
+
+
+def _rotation_speed_to_radians(value):
+	value = abs(float(value))
+	if value > 2.0 * math.pi:
+		return math.radians(value)
+	return value
 
 
 
@@ -265,65 +325,9 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 		import Math, ResMgr
 		global g_offline_aih
 
-		# Determine spawn position from arena XML
-		spawn_pos = Math.Vector3(0, 100.0, 0)
-		spawn_dir = Math.Vector3(0, 0, 3.1415926535)
-		try:
-			at = player.arena.arenaType
-			settings_path = 'spaces/%s/space.settings' % at.geometryName.split('/')[-1]
-			space_settings = ResMgr.openSection(settings_path)
-			LOG_DEBUG('OfflineBattle.SPACE_LOAD:', settings_path, space_settings is not None)
-			if space_settings is not None:
-				try:
-					if space_settings.has_key('startPosition'):
-						spawn_pos = space_settings.readVector3('startPosition')
-					if space_settings.has_key('startDirection'):
-						spawn_dir = space_settings.readVector3('startDirection')
-					LOG_DEBUG('OfflineBattle.spawn space.settings:', spawn_pos, spawn_dir)
-				except Exception:
-					pass
-
-			if space_settings is None or (spawn_pos.x == 0.0 and spawn_pos.y == 0.0 and spawn_pos.z == 0.0) or spawn_pos.y == 100.0:
-				xml_path = 'scripts/arena_defs/%s.xml' % at.geometryName.split('/')[-1]
-				section = ResMgr.openSection(xml_path)
-				LOG_DEBUG('OfflineBattle.XML_LOAD:', xml_path, section is not None)
-				if section is not None:
-					gp = section['gameplayTypes/ctf']
-					if gp is not None:
-						sp = gp['teamSpawnPoints/team1']
-						bp = gp['teamBasePositions/team1']
-						if sp is not None and len(sp.keys()) > 0:
-							for key, val in sp.items():
-								if 'position' in key:
-									vec2 = val.asVector2
-									# Find terrain height at this x, z!
-									y = 100.0
-									try:
-										import BigWorld
-										# Cast a ray from sky to ground
-										hit = BigWorld.wg_collideSegment(player.spaceID, Math.Vector3(vec2.x, 1000.0, vec2.y), Math.Vector3(vec2.x, -1000.0, vec2.y), 128)
-										if hit is not None:
-											y = hit[0].y
-									except: pass
-									spawn_pos = Math.Vector3(vec2.x, y, vec2.y)
-									LOG_DEBUG('OfflineBattle.spawn pos:', spawn_pos)
-									break
-						elif bp is not None:
-							for key, val in bp.items():
-								if 'position' in key or key.isdigit():
-									vec2 = val.asVector2
-									y = 100.0
-									try:
-										import BigWorld
-										hit = BigWorld.wg_collideSegment(player.spaceID, Math.Vector3(vec2.x, 1000.0, vec2.y), Math.Vector3(vec2.x, -1000.0, vec2.y), 128)
-										if hit is not None:
-											y = hit[0].y
-									except: pass
-									spawn_pos = Math.Vector3(vec2.x, y, vec2.y)
-									LOG_DEBUG('OfflineBattle.spawn bp pos:', spawn_pos)
-									break
-		except Exception as e:
-			LOG_DEBUG('OfflineBattle.XML_ERROR:', str(e))
+		# Resolve the player through real arena_defs team spawns first.
+		spawn_pos, spawn_yaw = resolve_player_spawn(player)
+		spawn_dir = Math.Vector3(0, 0, spawn_yaw)
 
 		# Use a MatrixProduct as the live vehicle matrix provider.
 		# Math.Matrix is a STATIC snapshot - WGTranslationOnlyMP.source needs a C++ live provider.
@@ -455,7 +459,13 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							LOG_DEBUG('OfflineBattle.chassis Servo attached')
 						except Exception as e:
 							LOG_DEBUG('OfflineBattle.chassis Servo error:', str(e))
-						
+
+						try:
+							loaded_models['track_fashion'] = setup_track_fashion(chassis, loaded_models.get('td')) if setup_track_fashion else None
+						except Exception as e:
+							loaded_models['track_fashion'] = None
+							LOG_DEBUG('OfflineBattle.track_fashion setup error:', str(e))
+
 						if hull is not None:
 							try:
 								chassis.node('V').attach(hull)
@@ -764,10 +774,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 		def _leaveArena():
 			_battle_finished[0] = True
 			try:
-				import SoundGroups as _SG
-				if getattr(_SG, 'g_instance', None) is not None:
-					_SG.g_instance.enableArenaSounds(False)
-					_SG.g_instance.enableLobbySounds(True)
+				stop_battle_audio()
 			except Exception: pass
 			try:
 				_aih = getattr(player, 'inputHandler', None)
@@ -1048,65 +1055,113 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 		}
 
 		_engine_state = {'init': False, 'snd1': None, 'snd2': None}
-		
+
+		def _stop_sound_handle(sound):
+			if sound is None:
+				return
+			try:
+				sound.stop()
+			except Exception:
+				pass
+
+		def _stop_vehicle_sounds(holder):
+			if holder is None:
+				return
+			try:
+				_stop_sound_handle(getattr(holder, '_engine_sound', None))
+				_stop_sound_handle(getattr(holder, '_chassis_sound', None))
+				holder._engine_sound = None
+				holder._chassis_sound = None
+				holder._engine_sounds_init = False
+			except Exception:
+				pass
+
+		def _init_vehicle_sounds(holder, root_model, veh_td):
+			if holder is None or root_model is None or veh_td is None:
+				return
+			if getattr(holder, '_engine_sounds_init', False):
+				return
+			try:
+				if not getattr(root_model, 'inWorld', False):
+					return
+				engine_dict = getattr(veh_td, 'engine', None)
+				chassis_dict = getattr(veh_td, 'chassis', None)
+				started = False
+				if engine_dict and 'sound' in engine_dict:
+					holder._engine_sound = root_model.playSound(engine_dict['sound'])
+					started = True
+				if chassis_dict and 'sound' in chassis_dict:
+					holder._chassis_sound = root_model.playSound(chassis_dict['sound'])
+					started = True
+				holder._engine_sounds_init = started
+				if started:
+					LOG_DEBUG('OfflineBattle: vehicle engine sounds attached')
+			except Exception as e:
+				LOG_DEBUG('OfflineBattle: vehicle engine sounds failed:', str(e))
+
+		def _set_sound_param(sound, param_name, value):
+			if sound is None:
+				return
+			try:
+				param = sound.param(param_name)
+				if param:
+					param.value = value
+			except Exception:
+				pass
+
+		def _update_vehicle_sounds(holder, speed, max_speed, throttle):
+			if holder is None:
+				return
+			try:
+				max_speed = max(float(max_speed), 0.1)
+				speed_ratio = min(1.0, abs(float(speed)) / max_speed)
+				load = min(1.0, speed_ratio + 0.2 + abs(float(throttle)) * 0.3)
+				_set_sound_param(getattr(holder, '_engine_sound', None), 'load', load)
+				_set_sound_param(getattr(holder, '_chassis_sound', None), 'speed', speed_ratio)
+			except Exception:
+				pass
+
 		_veh_velocity = [0.0]        # m/s, forward speed
 		_veh_turn_velocity = [0.0]   # rad/s, current hull rotation speed
 		_last_tick_time = [BigWorld.time()]
 		
-		# === WoT-style physics parameters ===
-		import math
+		# === Original offline hull physics parameters ===
 		_phys_mass           = 5730.0     # kg (total vehicle mass)
 		_phys_enginePowerHP  = 45.0       # HP (engine power)
+		_phys_enginePowerW   = _phys_enginePowerHP * 746.0
 		_phys_speedFwd       = 32.0 / 3.6 # m/s (forward speed limit)
 		_phys_speedBwd       = 12.0 / 3.6 # m/s (backward speed limit)
 		_phys_chassisRotSpd  = math.radians(38.0) # rad/s (chassis rotation speed)
 		_phys_terrainResist  = (1.1, 1.4, 2.6)    # (hard, medium, soft) coefficients
 		_phys_specificFriction = 0.6867              # rolling friction coefficient
 		
-		# Try to read actual values from the vehicle descriptor
 		try:
-			_tdp = td.physics
+			_tdp = getattr(td, 'physics', {}) or {}
 			LOG_DEBUG('OfflineBattle.PHYSICS_KEYS:', str(_tdp.keys()) if hasattr(_tdp, 'keys') else str(type(_tdp)))
-			
-			if 'weight' in _tdp:
-				_phys_mass = float(_tdp['weight'])
-			if 'enginePower' in _tdp:
-				# Engine power in td.physics is already in Watts
-				_phys_enginePowerW = float(_tdp['enginePower'])
-			else:
-				_phys_enginePowerW = _phys_enginePowerHP * 746.0
-				
-			if 'speedLimits' in _tdp:
-				# Speed limits in td.physics are already in m/s
-				_phys_speedFwd = float(_tdp['speedLimits'][0])
-				_phys_speedBwd = float(_tdp['speedLimits'][1])
-			if 'terrainResistance' in _tdp:
-				_tr = _tdp['terrainResistance']
-				_phys_terrainResist = (float(_tr[0]), float(_tr[1]), float(_tr[2]))
-			if 'specificFriction' in _tdp:
-				_phys_specificFriction = float(_tdp['specificFriction'])
+			if td and hasattr(td, 'physics'):
+				if 'weight' in td.physics:
+					_phys_mass = float(td.physics['weight'])
+				if 'enginePower' in td.physics:
+					_phys_enginePowerW = float(td.physics['enginePower'])
+					_phys_enginePowerHP = _phys_enginePowerW / 746.0
+				if 'speedLimits' in td.physics:
+					_phys_speedFwd = abs(float(td.physics['speedLimits'][0]))
+					_phys_speedBwd = abs(float(td.physics['speedLimits'][1]))
+				if 'terrainResistance' in td.physics:
+					_phys_terrainResist = (
+						float(td.physics['terrainResistance'][0]),
+						float(td.physics['terrainResistance'][1]),
+						float(td.physics['terrainResistance'][2])
+					)
+				if 'specificFriction' in td.physics:
+					_phys_specificFriction = float(td.physics['specificFriction'])
+			if td and hasattr(td, 'chassis') and 'rotationSpeed' in td.chassis:
+				_phys_chassisRotSpd = _rotation_speed_to_radians(td.chassis['rotationSpeed'])
+			elif td and hasattr(td, 'physics') and 'rotationSpeedLimit' in td.physics:
+				_phys_chassisRotSpd = _rotation_speed_to_radians(td.physics['rotationSpeedLimit'])
 		except Exception as e:
 			LOG_DEBUG('OfflineBattle.physics_read_1:', str(e))
-			_phys_enginePowerW = _phys_enginePowerHP * 746.0
-		
-		# Try to read rotation speed from chassis descriptor
-		try:
-			if hasattr(td, 'chassis') and 'rotationSpeed' in td.chassis:
-				_phys_chassisRotSpd = math.radians(float(td.chassis['rotationSpeed']))
-		except Exception as e:
-			LOG_DEBUG('OfflineBattle.physics_read_2:', str(e))
-		
-		# Try rotationSpeedLimit from physics dict
-		try:
-			if 'rotationSpeedLimit' in _tdp:
-				_phys_chassisRotSpd = float(_tdp['rotationSpeedLimit'])
-		except Exception:
-			pass
-		
-		# Use hard terrain by default (index 0)
-		# Use hard terrain by default (index 0)
 		_phys_terrainCoeff = _phys_terrainResist[0]
-		# Gravity
 		_phys_gravity = 9.81
 		
 		LOG_DEBUG('OfflineBattle.PHYSICS: mass=%.0f, power=%.0fHP(%.0fW), fwd=%.1f m/s, bwd=%.1f m/s, rot=%.1f deg/s, terrain=(%.2f,%.2f,%.2f), friction=%.4f' % (
@@ -1291,6 +1346,44 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 					except: pass
 					return False
 
+				def _vehicle_collision_radius(td):
+					try:
+						bbox = td.hull['hitTester'].bbox
+						max_x = max(abs(float(bbox[0][0])), abs(float(bbox[1][0])))
+						max_z = max(abs(float(bbox[0][2])), abs(float(bbox[1][2])))
+						return max(2.0, min(7.0, math.sqrt(max_x * max_x + max_z * max_z) * 0.78))
+					except Exception:
+						return 3.2
+
+				def _check_vehicle_collision_at(pos, moving_id, moving_td):
+					try:
+						radius = _vehicle_collision_radius(moving_td)
+						player_id = getattr(player, 'playerVehicleID', -1)
+						if moving_id != player_id and not getattr(player, '_is_dead', False):
+							player_td = loaded_models.get('td')
+							player_radius = _vehicle_collision_radius(player_td)
+							dx = pos.x - veh_pos[0]
+							dz = pos.z - veh_pos[2]
+							if dx * dx + dz * dz < (radius + player_radius) * (radius + player_radius):
+								return True
+						for other_id, other in mock_vehicles.iteritems():
+							if other_id == moving_id or other_id == player_id:
+								continue
+							if not getattr(other, 'isAlive', False):
+								continue
+							other_pos = getattr(other, 'position', None)
+							if other_pos is None:
+								continue
+							other_td = getattr(other, 'typeDescriptor', None) or loaded_models.get('td')
+							other_radius = _vehicle_collision_radius(other_td)
+							dx = pos.x - other_pos.x
+							dz = pos.z - other_pos.z
+							if dx * dx + dz * dz < (radius + other_radius) * (radius + other_radius):
+								return True
+					except Exception:
+						pass
+					return False
+
 				if not _engine_state['init']:
 					try:
 						td = loaded_models.get('td')
@@ -1333,37 +1426,26 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 					throttle = 0
 					steer = 0
 				
+				# Acceleration and braking: restored original offline physics.
 				cur_vel = _veh_velocity[0]
-				speed_limit = _phys_speedFwd if throttle >= 0 else _phys_speedBwd
-				
-				# Engine force: F = P / max(|v|, v_min) — this naturally gives strong
-				# initial acceleration that tapers off at high speed (just like WoT)
 				engine_force = 0.0
 				if throttle != 0:
-					min_vel = 1.5  # prevents division by near-zero at standstill
+					min_vel = 1.5
 					engine_force = _phys_enginePowerW / max(abs(cur_vel), min_vel)
-					# Cap engine force to prevent unrealistic initial thrust on heavy tanks
 					max_engine_force = _phys_mass * _phys_gravity * 0.7
 					engine_force = min(engine_force, max_engine_force)
-					engine_force *= throttle  # direction
-				
-				# Terrain resistance force (rolling resistance opposes motion):
-				# base_track_rr is a typical tracked vehicle rolling resistance coefficient (~0.07)
+					engine_force *= throttle
+
 				base_track_rr = 0.07
 				resist_force = _phys_mass * _phys_gravity * _phys_terrainCoeff * base_track_rr
-				
-				# Apply braking when:
-				#  - No throttle (coasting to stop)
-				#  - Throttle is opposite to current velocity (active braking)
+
 				braking = False
 				if throttle == 0 and abs(cur_vel) > 0.01:
 					braking = True
 				elif throttle != 0 and ((throttle > 0 and cur_vel < -0.1) or (throttle < 0 and cur_vel > 0.1)):
 					braking = True
-				
-				# Net force calculation
+
 				if braking:
-					# Braking force: tracks are locked, so we use specificFriction (sliding friction)
 					brake_force = _phys_mass * _phys_gravity * _phys_terrainCoeff * _phys_specificFriction
 					if cur_vel > 0:
 						net_force = -brake_force + engine_force
@@ -1372,25 +1454,17 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 				elif throttle == 0:
 					net_force = 0.0
 				else:
-					# Normal driving: engine minus rolling resistance
 					if throttle > 0:
 						net_force = engine_force - resist_force
 					else:
-						net_force = engine_force + resist_force  # engine_force is negative here
-				
-				# Acceleration (F = ma => a = F/m)
+						net_force = engine_force + resist_force
+
 				accel = net_force / _phys_mass
-				
-				# Integrate velocity
 				_veh_velocity[0] += accel * dt
-				
-				# Clamp to speed limits
 				if _veh_velocity[0] > _phys_speedFwd:
 					_veh_velocity[0] = _phys_speedFwd
 				elif _veh_velocity[0] < -_phys_speedBwd:
 					_veh_velocity[0] = -_phys_speedBwd
-				
-				# Stop completely if very slow and no throttle
 				if throttle == 0 and abs(_veh_velocity[0]) < 0.05:
 					_veh_velocity[0] = 0.0
 					
@@ -1414,39 +1488,41 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 					if _check_horizontal_collision(player.spaceID, Math.Vector3(veh_pos[0], veh_pos[1], veh_pos[2]), veh_yaw[0], _veh_velocity[0], _p_td):
 						_veh_velocity[0] = 0.0 # Zastavit při nárazu do zdi
 					else:
-						veh_pos[0] += math.sin(veh_yaw[0]) * _veh_velocity[0] * dt
-						veh_pos[2] += math.cos(veh_yaw[0]) * _veh_velocity[0] * dt
+						_next_pos = Math.Vector3(
+							veh_pos[0] + math.sin(veh_yaw[0]) * _veh_velocity[0] * dt,
+							veh_pos[1],
+							veh_pos[2] + math.cos(veh_yaw[0]) * _veh_velocity[0] * dt)
+						if _check_vehicle_collision_at(_next_pos, getattr(player, 'playerVehicleID', -1), _p_td):
+							_veh_velocity[0] = 0.0
+						else:
+							veh_pos[0] = _next_pos.x
+							veh_pos[2] = _next_pos.z
 				
-				# --- Hull Rotation (WoT-style) ---
 				turn_dir = steer
-				
-				# WoT reduces rotation speed on bad terrain and when moving
-				# At full speed, rotation is ~60-80% of stationary rotation
 				speed_ratio = abs(_veh_velocity[0]) / max(_phys_speedFwd, 0.1)
 				rot_speed_modifier = 1.0 / (1.0 + speed_ratio * 0.5)
-				# Terrain also affects rotation
 				terrain_rot_modifier = 1.0 / _phys_terrainCoeff
-				
 				max_rot_speed = _phys_chassisRotSpd * rot_speed_modifier * terrain_rot_modifier
-				
-				# Smooth rotation ramp-up (tracks don't instantly grip)
 				target_turn_vel = turn_dir * max_rot_speed
 				turn_diff = target_turn_vel - _veh_turn_velocity[0]
-				turn_accel = max_rot_speed * 4.0  # ~0.25s to reach full rotation speed
-				
+				turn_accel = max_rot_speed * 4.0
 				if abs(turn_diff) < turn_accel * dt:
 					_veh_turn_velocity[0] = target_turn_vel
 				else:
 					_veh_turn_velocity[0] += turn_accel * dt * (1 if turn_diff > 0 else -1)
-				
-				# Stop rotation smoothly when no input
 				if turn_dir == 0 and abs(_veh_turn_velocity[0]) < 0.01:
 					_veh_turn_velocity[0] = 0.0
-				
+
 				if _veh_turn_velocity[0] != 0.0:
 					veh_yaw[0] += _veh_turn_velocity[0] * dt
-					while veh_yaw[0] > math.pi: veh_yaw[0] -= 2*math.pi
-					while veh_yaw[0] < -math.pi: veh_yaw[0] += 2*math.pi
+					veh_yaw[0] = _normalize_yaw(veh_yaw[0])
+
+				_tf = loaded_models.get('track_fashion')
+				if _tf is not None:
+					try:
+						_tf.update(dt, _veh_velocity[0], _veh_turn_velocity[0])
+					except Exception:
+						pass
 
 				# --- Terrain resistance (ground snap every tick) ---
 				try:
@@ -2022,6 +2098,13 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								# NO ENEMIES! STOP!
 								m_veh._veh_velocity = max(0.0, m_veh._veh_velocity - 20.0 * dt)
 								m_veh._veh_turn_velocity = 0.0
+								_bot_tf = getattr(m_veh, '_track_fashion', None)
+								if _bot_tf is not None:
+									try:
+										_bot_tf.update(dt, 0.0, 0.0)
+									except Exception:
+										pass
+								_update_vehicle_sounds(m_veh, m_veh._veh_velocity, getattr(m_veh, '_engine_max_speed', 10.0), 0.0)
 								continue
 							dx = target_pos[0] - m_veh.position.x
 							dz = target_pos[2] - m_veh.position.z
@@ -2034,29 +2117,30 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							bot_enginePowerW = 500000.0
 							bot_speedFwd = 10.0
 							bot_speedBwd = 5.0
-							bot_terrainCoeff = 1.0
-							bot_specificFriction = 0.8
 							bot_chassisRotSpd = 0.5
-							
+							bot_terrainCoeff = 1.1
+							bot_specificFriction = 0.7
 							try:
-								if _td:
-									if 'weight' in _td.physics: bot_mass = float(_td.physics['weight'])
-									if 'enginePower' in _td.physics: bot_enginePowerW = float(_td.physics['enginePower'])
+								if _td and hasattr(_td, 'physics'):
+									if 'weight' in _td.physics:
+										bot_mass = float(_td.physics['weight'])
+									if 'enginePower' in _td.physics:
+										bot_enginePowerW = float(_td.physics['enginePower'])
 									if 'speedLimits' in _td.physics:
-										bot_speedFwd = float(_td.physics['speedLimits'][0])
-										bot_speedBwd = float(_td.physics['speedLimits'][1])
-									if 'terrainResistance' in _td.physics: bot_terrainCoeff = float(_td.physics['terrainResistance'][0])
-									if 'specificFriction' in _td.physics: bot_specificFriction = float(_td.physics['specificFriction'])
-									if hasattr(_td, 'chassis') and 'rotationSpeed' in _td.chassis:
-										# chassis['rotationSpeed'] je v rad/s (ne stupně)
-										raw_rot = float(_td.chassis['rotationSpeed'])
-										# Pokud je hodnota > 2*pi, je ve stupních – konvertovat
-										bot_chassisRotSpd = math.radians(raw_rot) if raw_rot > 6.3 else raw_rot
-									elif 'rotationSpeedLimit' in _td.physics:
-										# rotationSpeedLimit je již v rad/s
-										bot_chassisRotSpd = float(_td.physics['rotationSpeedLimit'])
-							except: pass
-							
+										bot_speedFwd = abs(float(_td.physics['speedLimits'][0]))
+										bot_speedBwd = abs(float(_td.physics['speedLimits'][1]))
+									if 'terrainResistance' in _td.physics:
+										bot_terrainCoeff = float(_td.physics['terrainResistance'][0])
+									if 'specificFriction' in _td.physics:
+										bot_specificFriction = float(_td.physics['specificFriction'])
+								if _td and hasattr(_td, 'chassis') and 'rotationSpeed' in _td.chassis:
+									bot_chassisRotSpd = _rotation_speed_to_radians(_td.chassis['rotationSpeed'])
+								elif _td and hasattr(_td, 'physics') and 'rotationSpeedLimit' in _td.physics:
+									bot_chassisRotSpd = _rotation_speed_to_radians(_td.physics['rotationSpeedLimit'])
+							except Exception:
+								pass
+							m_veh._engine_max_speed = bot_speedFwd
+
 							# VIRTUAL DRIVER
 							throttle = 0.0
 							turn_dir = 0
@@ -2088,59 +2172,84 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								engine_force = bot_enginePowerW / max(abs(cur_vel), 1.5)
 								max_engine_force = bot_mass * bot_gravity * 0.7
 								engine_force = min(engine_force, max_engine_force) * throttle
-								
+
 							base_track_rr = 0.07
 							resist_force = bot_mass * bot_gravity * bot_terrainCoeff * base_track_rr
-							
+
 							braking = False
-							if throttle == 0 and abs(cur_vel) > 0.01: braking = True
-							elif throttle != 0 and ((throttle > 0 and cur_vel < -0.1) or (throttle < 0 and cur_vel > 0.1)): braking = True
-							
+							if throttle == 0 and abs(cur_vel) > 0.01:
+								braking = True
+							elif throttle != 0 and ((throttle > 0 and cur_vel < -0.1) or (throttle < 0 and cur_vel > 0.1)):
+								braking = True
+
 							if braking:
 								brake_force = bot_mass * bot_gravity * bot_terrainCoeff * bot_specificFriction
-								if cur_vel > 0: net_force = -brake_force + engine_force
-								else: net_force = brake_force + engine_force
-							elif throttle == 0: net_force = 0.0
+								if cur_vel > 0:
+									net_force = -brake_force + engine_force
+								else:
+									net_force = brake_force + engine_force
+							elif throttle == 0:
+								net_force = 0.0
 							else:
-								if throttle > 0: net_force = engine_force - resist_force
-								else: net_force = engine_force + resist_force
-								
+								if throttle > 0:
+									net_force = engine_force - resist_force
+								else:
+									net_force = engine_force + resist_force
+
 							accel = net_force / bot_mass
 							m_veh._veh_velocity += accel * dt
-							if m_veh._veh_velocity > bot_speedFwd: m_veh._veh_velocity = bot_speedFwd
-							elif m_veh._veh_velocity < -bot_speedBwd: m_veh._veh_velocity = -bot_speedBwd
-							
-							if throttle == 0 and abs(m_veh._veh_velocity) < 0.05: m_veh._veh_velocity = 0.0
-							
+							if m_veh._veh_velocity > bot_speedFwd:
+								m_veh._veh_velocity = bot_speedFwd
+							elif m_veh._veh_velocity < -bot_speedBwd:
+								m_veh._veh_velocity = -bot_speedBwd
+							if throttle == 0 and abs(m_veh._veh_velocity) < 0.05:
+								m_veh._veh_velocity = 0.0
+
+							try:
+								_root_model = getattr(m_veh, '_chassis_model', None) or getattr(m_veh, 'model', None)
+								_init_vehicle_sounds(m_veh, _root_model, _td)
+								_update_vehicle_sounds(m_veh, m_veh._veh_velocity, bot_speedFwd, throttle)
+							except Exception:
+								pass
+
 							if m_veh._veh_velocity != 0.0:
 								if _check_horizontal_collision(player.spaceID, m_veh.position, m_veh.yaw, m_veh._veh_velocity, _td):
 									m_veh._veh_velocity = 0.0
 								else:
-									m_veh.position = Math.Vector3(
+									_next_bot_pos = Math.Vector3(
 										m_veh.position.x + math.sin(m_veh.yaw) * m_veh._veh_velocity * dt,
 										m_veh.position.y,
 										m_veh.position.z + math.cos(m_veh.yaw) * m_veh._veh_velocity * dt
 									)
+									if _check_vehicle_collision_at(_next_bot_pos, eid, _td):
+										m_veh._veh_velocity = 0.0
+									else:
+										m_veh.position = _next_bot_pos
 								
-							# ROTATION
 							speed_ratio = abs(m_veh._veh_velocity) / max(bot_speedFwd, 0.1)
 							rot_speed_modifier = 1.0 / (1.0 + speed_ratio * 0.5)
 							terrain_rot_modifier = 1.0 / bot_terrainCoeff
 							max_rot_speed = bot_chassisRotSpd * rot_speed_modifier * terrain_rot_modifier
-							
 							target_turn_vel = turn_dir * max_rot_speed
 							turn_diff = target_turn_vel - m_veh._veh_turn_velocity
 							turn_accel = max_rot_speed * 4.0
-							
-							if abs(turn_diff) < turn_accel * dt: m_veh._veh_turn_velocity = target_turn_vel
-							else: m_veh._veh_turn_velocity += turn_accel * dt * (1 if turn_diff > 0 else -1)
-							
-							if turn_dir == 0 and abs(m_veh._veh_turn_velocity) < 0.01: m_veh._veh_turn_velocity = 0.0
-							
+							if abs(turn_diff) < turn_accel * dt:
+								m_veh._veh_turn_velocity = target_turn_vel
+							else:
+								m_veh._veh_turn_velocity += turn_accel * dt * (1 if turn_diff > 0 else -1)
+							if turn_dir == 0 and abs(m_veh._veh_turn_velocity) < 0.01:
+								m_veh._veh_turn_velocity = 0.0
+
 							if m_veh._veh_turn_velocity != 0.0:
 								m_veh.yaw += m_veh._veh_turn_velocity * dt
-								while m_veh.yaw > math.pi: m_veh.yaw -= 2*math.pi
-								while m_veh.yaw < -math.pi: m_veh.yaw += 2*math.pi
+								m_veh.yaw = _normalize_yaw(m_veh.yaw)
+
+							_bot_tf = getattr(m_veh, '_track_fashion', None)
+							if _bot_tf is not None:
+								try:
+									_bot_tf.update(dt, m_veh._veh_velocity, m_veh._veh_turn_velocity)
+								except Exception:
+									pass
 							
 							# TERRAIN SNAP
 							try:
@@ -2243,6 +2352,10 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 										if not _shots and isinstance(_td.gun, dict): _shots = _td.gun.get('shots', [])
 										if _shots:
 											_shot = _shots[0]
+											try:
+												play_gunshot(getattr(m_veh, 'model', None) or getattr(m_veh, '_chassis_model', None), _td.gun, 0)
+											except Exception:
+												pass
 											_effectsDescr = vehicles.g_cache.shotEffects[_shot['shell']['effectsIndex']]
 											_gravity = _shot['gravity']
 											_speed = _shot['speed']
@@ -2309,12 +2422,12 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 													dmg = 0
 													if auto_bounce or (pierce_rng < eff_armor and 'HE' not in _shot['shell']['name']):
 														LOG_DEBUG('BOT RICOCHET!')
-														import SoundGroups
-														pass # removed playSound2D
+														play_notification(('player_ricochet', 'player_no_hp_damage_at_attempt', 'player_no_hp_damage_at_no_attempt'))
 													else:
 														dmg = random.randint(int(_shot['shell']['damage'][0]*0.75), int(_shot['shell']['damage'][0]*1.25))
 													
 													if dmg > 0:
+														play_notification(('player_hp_damaged_by_projectile', 'player_hp_damaged_by_explosion', 'player_damaged'))
 														player_mock.health -= dmg
 														player_mock.last_killer_id = eid
 														if player_mock.health <= 0:
@@ -2381,6 +2494,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 																		if not getattr(_d_ch, 'loaded', True) or not getattr(_d_hu, 'loaded', True) or not getattr(_d_tu, 'loaded', True) or not getattr(_d_gu, 'loaded', True):
 																			BigWorld.callback(0.1, _swap_destroyed_model_bot)
 																			return
+																		_stop_vehicle_sounds(m_veh)
 																		try: BigWorld.delModel(_old_ch_ref)
 																		except: pass
 																		_d_ch.position = _old_pos
@@ -2492,6 +2606,11 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							def _swap_player_destroyed(_d_ch=_d_ch, _d_hu=_d_hu, _d_tu=_d_tu, _d_gu=_d_gu):
 								try:
 									# Step 1: Remove live chassis from scene (hull/turret/gun are attached children)
+									_stop_sound_handle(_engine_state.get('snd1', None))
+									_stop_sound_handle(_engine_state.get('snd2', None))
+									_engine_state['snd1'] = None
+									_engine_state['snd2'] = None
+									_engine_state['init'] = False
 									_live_chassis = loaded_models.get('chassis') or loaded_models.get('hull')
 									if _live_chassis is not None:
 										try:
@@ -2528,10 +2647,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								LOG_DEBUG('Player death: triggering exit to hangar')
 								_battle_finished[0] = True
 								try:
-									import SoundGroups as _SG
-									if getattr(_SG, 'g_instance', None) is not None:
-										_SG.g_instance.enableArenaSounds(False)
-										_SG.g_instance.enableLobbySounds(True)
+									stop_battle_audio()
 								except Exception as e: LOG_DEBUG('CRITICAL ERROR IN K KEY:', e); import traceback; LOG_DEBUG(traceback.format_exc())
 								
 								# Safely stop all control_modes ticks before they can crash
@@ -2906,13 +3022,11 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								if auto_bounce:
 									dmg = 0
 									LOG_DEBUG('REAL RICOCHET (Auto-Bounce >70 deg)!')
-									import SoundGroups
-									pass # removed playSound2D
+									play_notification(('enemy_ricochet_by_player', 'enemy_no_hp_damage_at_no_attempt', 'enemy_ricochet'))
 								elif pierce_rng < eff_armor and 'HE' not in _shell['name']:
 									dmg = 0
 									LOG_DEBUG('REAL RICOCHET / NON-PENETRATION!')
-									import SoundGroups
-									pass # removed playSound2D
+									play_notification(('enemy_no_hp_damage_at_attempt', 'enemy_no_hp_damage_at_no_attempt', 'enemy_armor_not_pierced'))
 							else:
 								dmg = random.randint(250, 450)
 						except Exception as e:
@@ -2921,6 +3035,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							dmg = random.randint(250, 450)
 						
 						if dmg > 0:
+							play_notification(('enemy_hp_damaged_by_player', 'enemy_hp_damaged', 'enemy_damaged_by_projectile'))
 							actual_dmg = min(dmg, max(0, enemy_mock.health))
 							enemy_mock.health -= dmg
 							enemy_mock.damage_from_player = getattr(enemy_mock, 'damage_from_player', 0) + actual_dmg
@@ -3041,6 +3156,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 									if not getattr(_d_ch, 'loaded', True) or not getattr(_d_hu, 'loaded', True) or not getattr(_d_tu, 'loaded', True) or not getattr(_d_gu, 'loaded', True):
 										BigWorld.callback(0.1, _swap_destroyed_model)
 										return
+									_stop_vehicle_sounds(enemy_mock)
 									try: BigWorld.delModel(_old_ch_ref)
 									except: pass
 									_d_ch.position = _old_pos
@@ -3082,26 +3198,11 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							elif hasattr(eff, 'effectsList'):
 								player_eff = EffectsList.EffectsListPlayer(eff.effectsList, eff.keyPoints)
 								player_eff.play(mock_veh.model, m_pos, dir_vec)
-						# Forcibly play gunshot sound based on caliber
+						# Play gunshot through the shared descriptor-aware sound mapper.
 						try:
-							caliber = 75
-							if td and hasattr(td, 'gun') and 'shots' in td.gun:
-								caliber = td.gun['shots'][0]['shell']['caliber']
-							
-							if caliber > 120:
-								sound_event = '/tanks/guns/gun_huge/gun_huge_152mm'
-							elif caliber > 100:
-								sound_event = '/tanks/guns/gun_large/gun_large_115-152mm'
-							elif caliber > 75:
-								sound_event = '/tanks/guns/gun_main/gun_main_85-107mm'
-							elif caliber > 45:
-								sound_event = '/tanks/guns/gun_medium/gun_medium_50-75mm'
-							else:
-								sound_event = '/tanks/guns/gun_small/gun_small_20-45mm'
-							
 							root_model = loaded_models.get('chassis') or loaded_models.get('hull') or loaded_models.get('turret') or loaded_models.get('gun')
-							if root_model is not None:
-								root_model.playSound(sound_event)
+							if root_model is not None and td and hasattr(td, 'gun'):
+								play_gunshot(root_model, td.gun, _gun_state.get('shot_index', 0))
 						except Exception as e: pass
 					except Exception as e: pass
 						
@@ -3172,20 +3273,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								except Exception as e: LOG_DEBUG('CRITICAL ERROR IN K KEY:', e); import traceback; LOG_DEBUG(traceback.format_exc())
 								
 								try:
-									import MusicController
-									if hasattr(MusicController, 'g_musicController') and MusicController.g_musicController:
-										_mc = MusicController.g_musicController
-										try: _mc.stop()
-										except: pass
-										evt = None
-										if allied > enemy:
-											evt = getattr(MusicController, 'MUSIC_EVENT_COMBAT_VICTORY', getattr(MusicController, 'MUSIC_EVENT_VICTORY', 'music_victory'))
-										elif allied < enemy:
-											evt = getattr(MusicController, 'MUSIC_EVENT_COMBAT_LOSE', getattr(MusicController, 'MUSIC_EVENT_LOSE', 'music_lose'))
-										else:
-											evt = getattr(MusicController, 'MUSIC_EVENT_COMBAT_DRAW', getattr(MusicController, 'MUSIC_EVENT_DRAW', 'music_draw'))
-										try: _mc.play(evt)
-										except: pass
+									play_result_audio('victory' if allied > enemy else ('defeat' if allied < enemy else 'draw'))
 								except Exception as e: LOG_DEBUG('CRITICAL ERROR IN K KEY MUSIC:', e); import traceback; LOG_DEBUG(traceback.format_exc())
 								
 								try:
@@ -3313,15 +3401,6 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 				if event.isKeyDown() and event.key in (Keys.KEY_O, Keys.KEY_P, Keys.KEY_L):
 					try:
 						player = BigWorld.player()
-						start_pos, dir_vec = player.gunRotator._VehicleGunRotator__getCurShotPosition()
-						dir_vec.normalise()
-						hit = BigWorld.wg_collideSegment(player.spaceID, start_pos, start_pos + dir_vec.scale(500.0), 128)
-						target_pos = hit[0] if hit else start_pos + dir_vec.scale(50.0)
-						
-						# Drop to ground
-						ground_hit = BigWorld.wg_collideSegment(player.spaceID, Math.Vector3(target_pos.x, target_pos.y + 100.0, target_pos.z), Math.Vector3(target_pos.x, target_pos.y - 100.0, target_pos.z), 128)
-						if ground_hit: target_pos = ground_hit[0]
-						
 						td = None
 						bot_name = 'Bot ' + str(_spawn_count[0])
 						bot_team = 1 if event.key == Keys.KEY_L else 2
@@ -3352,6 +3431,22 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								td = loaded_models.get('td')
 						
 						if not td: return True
+						try:
+							start_pos, dir_vec = player.gunRotator._VehicleGunRotator__getCurShotPosition()
+							dir_vec.normalise()
+						except Exception:
+							start_pos = Math.Vector3(veh_pos[0], veh_pos[1] + 2.0, veh_pos[2])
+							dir_vec = Math.Vector3(math.sin(veh_yaw[0]), 0.0, math.cos(veh_yaw[0]))
+
+						target_pos, target_yaw = resolve_bot_spawn(player, bot_team, _spawn_count[0])
+						if target_pos is None:
+							hit = BigWorld.wg_collideSegment(player.spaceID, start_pos, start_pos + dir_vec.scale(500.0), 128)
+							target_pos = hit[0] if hit else start_pos + dir_vec.scale(50.0)
+							ground_hit = BigWorld.wg_collideSegment(player.spaceID, Math.Vector3(target_pos.x, target_pos.y + 100.0, target_pos.z), Math.Vector3(target_pos.x, target_pos.y - 100.0, target_pos.z), 128)
+							if ground_hit: target_pos = ground_hit[0]
+							target_yaw = math.atan2(start_pos.x - target_pos.x, start_pos.z - target_pos.z)
+						elif target_yaw is None:
+							target_yaw = math.atan2(start_pos.x - target_pos.x, start_pos.z - target_pos.z)
 						
 						try:
 							for hitTester in td.getHitTesters():
@@ -3375,14 +3470,17 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							e_mock = _MockVeh()
 							e_mock.id = e_id
 							e_mock.position = target_pos
-							# Face the player
-							import math
-							e_mock.yaw = math.atan2(start_pos.x - target_pos.x, start_pos.z - target_pos.z)
+							e_mock.yaw = target_yaw
 							e_mock.health = getattr(td, 'maxHealth', 1000)
 							e_mock.maxHealth = e_mock.health
 							e_mock.isAlive = True
 							e_mock.isStarted = True
 							e_mock._bot_team = bot_team
+							try:
+								e_mock._track_fashion = setup_track_fashion(ch, td) if setup_track_fashion else None
+							except Exception as e:
+								e_mock._track_fashion = None
+								LOG_DEBUG('OfflineBattle.bot track_fashion setup error:', str(e))
 							LOG_DEBUG('SPAWN BOT: bot_team=%s bot_name=%s player_team=%s' % (bot_team, bot_name, getattr(player, '_offhangar_team', -99)))
 							e_mock.publicInfo = {
 								'vehicleType': td,
@@ -3416,6 +3514,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							e_mock._turret_model = tu
 							e_mock._gun_model = gu
 							e_mock._t_mat = t_mat
+							_init_vehicle_sounds(e_mock, ch, td)
 							class FakeEnemyAppearance(object):
 								def __init__(self):
 									from Event import Event
@@ -3474,84 +3573,10 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 			
 			Waiting.close()
 			
-			# ---- ZVUK: okamžitě zastavit garážové audio, spustit loading hudbu ----
 			try:
-				import MusicController as _MC
-				
-				
-				if not hasattr(_MC, '_orig_play'):
-					_MC._orig_play = _MC.MusicController.play
-					def _mock_play(self, eventName):
-						from debug_utils import LOG_DEBUG
-						import traceback
-						LOG_DEBUG('MusicController.play called with:', eventName)
-						LOG_DEBUG('Traceback:', ''.join(traceback.format_stack()))
-						return _MC._orig_play(self, eventName)
-					_MC.MusicController.play = _mock_play
-				if not hasattr(_MC, '_orig_stopMusic'):
-					_MC._orig_stopMusic = _MC.MusicController.stopMusic
-					def _mock_stopMusic(self, *args, **kwargs):
-						from debug_utils import LOG_DEBUG
-						import traceback
-						LOG_DEBUG('MusicController.stopMusic called!')
-						LOG_DEBUG('Traceback:', ''.join(traceback.format_stack()))
-						return _MC._orig_stopMusic(self, *args, **kwargs)
-				_mc = _MC.g_musicController
-				try:
-					import SoundGroups as _SG
-					if getattr(_SG, 'g_instance', None) is not None:
-						_SG.g_instance.setVolume('music', 1.0)
-						_SG.g_instance.setVolume('ambient', 1.0)
-				except Exception: pass
-				
-				# 1) Okamžitě zastavit staré FMOD sound eventy
-				_snd_music = getattr(_mc, '_MusicController__sndEventMusic', None)
-				if _snd_music is not None:
-					try: _snd_music.stop()
-					except Exception: pass
-				_snd_ambient = getattr(_mc, '_MusicController__sndEventAmbient', None)
-				if _snd_ambient is not None:
-					try: _snd_ambient.stop()
-					except Exception: pass
-				
-				# 2) Zastavit interní stav
-				_mc.stopAmbient()
-				_mc.stopMusic()
-				
-				# 3) Aplikovat patch přímo na instanci
-				def _mock_mc_getArenaSoundEvent(self, eventId):
-					from debug_utils import LOG_DEBUG
-					import BigWorld
-					player = BigWorld.player()
-					if hasattr(player, 'arena') and hasattr(player.arena, 'arenaType'):
-						# 1. Camouflage
-						import items.vehicles as iv
-						cust = iv.g_cache.customization(td.type.id[0])
-						camo_kind = getattr(player.arena.arenaType, 'vehicleCamouflageKind', 0)
-						camo_params = td.camouflages[camo_kind] if len(td.camouflages) > camo_kind else None
-						LOG_DEBUG('OfflineBattle.customization:', 'kind', camo_kind, 'params', camo_params, 'emblems', td.playerEmblems)
-						sound_name = ''
-						if eventId == _MC.MUSIC_EVENT_COMBAT:
-							sound_name = getattr(player.arena.arenaType, 'music', '')
-						elif eventId == _MC.MUSIC_EVENT_COMBAT_LOADING:
-							sound_name = getattr(player.arena.arenaType, 'loadingMusic', '')
-						elif eventId == _MC.AMBIENT_EVENT_COMBAT:
-							sound_name = getattr(player.arena.arenaType, 'ambientSound', '')
-						LOG_DEBUG('OfflineBattle.mock_getArenaSoundEvent DIRECT', eventId, sound_name)
-						if sound_name:
-							import FMOD
-							return FMOD.getSound(sound_name)
-					return _MC.MusicController._MusicController__getArenaSoundEvent(self, eventId)
-
-				import types
-				_mc._MusicController__getArenaSoundEvent = types.MethodType(_mock_mc_getArenaSoundEvent, _mc)
-				
-				# 3) Spustit loading hudbu pro bitvu
-				_mc.play(_MC.MUSIC_EVENT_COMBAT_LOADING)
-				LOG_DEBUG('OfflineBattle.sounds.battle_start', 'COMBAT_LOADING OK')
+				start_loading_audio(player)
 			except Exception as _se:
-				LOG_DEBUG('OfflineBattle.sounds.battle_start error', _se)
-			# ---- konec zvuk ----
+				LOG_DEBUG('OfflineBattle.sounds.loading error', _se)
 			
 			WindowsManager.g_windowsManager.startBattle()
 			WindowsManager.g_windowsManager.showBattleLoading()
@@ -3564,14 +3589,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 				def _finish_battle_load():
 					try:
 						try:
-							import SoundGroups as _SG
-							if getattr(_SG, 'g_instance', None) is not None:
-								_SG.g_instance.enableLobbySounds(False)
-								_SG.g_instance.enableArenaSounds(True)
-							import MusicController as _MC
-							_MC.g_musicController.play(_MC.MUSIC_EVENT_COMBAT)
-							from debug_utils import LOG_DEBUG
-							LOG_DEBUG('OfflineBattle.sounds', 'MUSIC_EVENT_COMBAT triggered in finish load')
+							start_combat_audio(player)
 						except Exception as e: pass
 						
 						Waiting.close()
@@ -3621,7 +3639,8 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 									player.arena.period = 2
 									player.arena.periodLength = _prebattle_time
 									player.arena.periodEndTime = BigWorld.serverTime() + _prebattle_time
-									player.arena.onPeriodChange(2, player.arena.periodEndTime, _prebattle_time, 0)
+									player.arena.periodAdditionalInfo = {}
+									player.arena.onPeriodChange(2, player.arena.periodEndTime, _prebattle_time, {})
 									
 									# Switch to Battle Mode
 									def _start_battle():
@@ -3629,10 +3648,10 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 											player.arena.period = 3
 											player.arena.periodLength = _battle_duration
 											player.arena.periodEndTime = BigWorld.serverTime() + _battle_duration
-											player.arena.onPeriodChange(3, player.arena.periodEndTime, _battle_duration, 0)
+											player.arena.periodAdditionalInfo = {}
+											player.arena.onPeriodChange(3, player.arena.periodEndTime, _battle_duration, {})
 											try:
-												import MusicController as _MC
-												_MC.g_musicController.play(_MC.MUSIC_EVENT_NONE)
+												start_combat_audio(player)
 											except Exception as e: LOG_DEBUG('CRITICAL ERROR IN K KEY:', e); import traceback; LOG_DEBUG(traceback.format_exc())
 										except Exception as e:
 											LOG_DEBUG('OfflineBattle StartBattle error:', e)

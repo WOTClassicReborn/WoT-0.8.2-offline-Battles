@@ -11,7 +11,7 @@ import items
 from debug_utils import LOG_CURRENT_EXCEPTION
 from items import ITEM_TYPE_INDICES, vehicles
 
-from gui.mods.offhangar._constants import REQUEST_CALLBACK_TIME
+from gui.mods.offhangar._constants import CONFIG_OPTIONS, REQUEST_CALLBACK_TIME
 from gui.mods.offhangar.command_router import RequestResult
 from gui.mods.offhangar.data import (
 	getOfflineInventory,
@@ -785,8 +785,14 @@ def handle_prebattle(fake_server, requestID, cmd, args):
 
 
 def handle_unknown(fake_server, requestID, cmd, args):
-	# Fallback strategy for offline mode: do not break flow on unknown commands.
-	LOG_DEBUG('CommandRouter.unknown', requestID, cmd, args)
+	# Fallback strategy for offline mode: keep compat by default, but never silently.
+	cmdName = _ACCOUNT_CMD_INDEX.get(cmd, '')
+	LOG_DEBUG('CommandRouter.unknown', requestID, cmd, cmdName, args)
+	if CONFIG_OPTIONS.get('unknown_command_policy', 'compat_success') == 'fail_stateful':
+		name_upper = str(cmdName).upper()
+		for marker in ('BUY', 'SELL', 'EQUIP', 'SET_', 'CHANGE', 'UNLOCK', 'CUSTOM', 'VEH', 'TMAN'):
+			if marker in name_upper:
+				return RequestResult(getattr(AccountCommands, 'RES_FAILURE', -1), 'OFFHANGAR_UNKNOWN_COMMAND')
 	return _success()
 
 

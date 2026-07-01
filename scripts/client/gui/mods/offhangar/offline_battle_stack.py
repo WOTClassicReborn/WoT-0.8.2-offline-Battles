@@ -121,10 +121,10 @@ def _resolve_selected_compact_descr(player):
 
 def build_offline_battle_context(player, selected_veh_inv_id):
 	"""
-	Build minimal pseudo-battle stack for the client:
+	Build minimal pseudo-battle stack for the client sandbox:
 	- map: random from 0.8.2 arena_defs pool
-	- team1: player + 14 bots
-	- team2: 15 bots
+	- team1: player only at boot
+	- live allies/enemies are spawned later by the battle hotkeys
 
 	Important: keys/fields here are consumed by the arena/avatar stubs injected by the mod.
 	"""
@@ -191,12 +191,6 @@ def build_offline_battle_context(player, selected_veh_inv_id):
 	allies = [_make_player_info(player_dbid, 1, player_name, player_vehicle_id, selected_compact_descr)]
 	enemies = []
 	acc_id = 1
-
-	from _constants import CONFIG_OPTIONS
-	prefix_allies = str(CONFIG_OPTIONS.get('bot_name_prefix_allies', 'Bot_'))
-	prefix_enemies = str(CONFIG_OPTIONS.get('bot_name_prefix_enemies', 'Bot_'))
-
-	pass
 
 	vehicles = {}
 	for p in (allies + enemies):
