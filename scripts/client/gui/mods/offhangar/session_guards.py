@@ -482,76 +482,31 @@ patch_technical_maintenance_credits()
 
 def patch_tech_maintenance_update():
     from gui.Scaleform.TechnicalMaintenance import TechnicalMaintenance
-    from gui.ClientUpdateManager import g_clientUpdateManager
+    from PlayerEvents import g_playerEvents
     _orig_populateUI = TechnicalMaintenance.populateUI
     def _patched_populateUI(self, *args, **kwargs):
         _orig_populateUI(self, *args, **kwargs)
         try:
             import BigWorld
             if hasattr(BigWorld.player(), 'stats'):
-                BigWorld.player().stats.get('credits', lambda resID, val: g_clientUpdateManager.update({'stats': {'credits': val}}))
-                BigWorld.player().stats.get('gold', lambda resID, val: g_clientUpdateManager.update({'stats': {'gold': val}}))
+                BigWorld.player().stats.get('credits', lambda resID, val: g_playerEvents.onClientUpdated({'stats': {'credits': val}}))
+                BigWorld.player().stats.get('gold', lambda resID, val: g_playerEvents.onClientUpdated({'stats': {'gold': val}}))
             else:
-                g_clientUpdateManager.update({'stats': {'credits': 100000000, 'gold': 1000000}})
+                g_playerEvents.onClientUpdated({'stats': {'credits': 100000000, 'gold': 1000000}})
         except Exception as e:
             from debug_utils import LOG_CURRENT_EXCEPTION
             LOG_CURRENT_EXCEPTION()
     TechnicalMaintenance.populateUI = _patched_populateUI
 
-patch_tech_maintenance_update()
-
-def test_stats_credits():
-    from gui.Scaleform.TechnicalMaintenance import TechnicalMaintenance
-    _orig_populateUI = TechnicalMaintenance.populateUI
-    def _patched_populateUI(self, *args, **kwargs):
-        _orig_populateUI(self, *args, **kwargs)
-        import BigWorld
-        from debug_utils import LOG_DEBUG
-        BigWorld.player().stats.get('credits', lambda resID, val: LOG_DEBUG('TEST CREDITS:', val))
-        try:
-            self.uiHolder.call('techMaintenance.setCredits', [100000000])
-        except: pass
-    TechnicalMaintenance.populateUI = _patched_populateUI
-test_stats_credits()
-
-def patch_tech_maintenance_force_credits():
-    from gui.Scaleform.TechnicalMaintenance import TechnicalMaintenance
-    _orig_populateUI = TechnicalMaintenance.populateUI
-    def _patched_populateUI(self, *args, **kwargs):
-        _orig_populateUI(self, *args, **kwargs)
-        try:
-            self.uiHolder.call('common.creditsResponse', [100000000])
-            self.uiHolder.call('common.goldResponse', [1000000])
-        except: pass
-    TechnicalMaintenance.populateUI = _patched_populateUI
-
-patch_tech_maintenance_force_credits()
-
-def patch_tech_maintenance_log_price():
-    from gui.Scaleform.TechnicalMaintenance import TechnicalMaintenance
-    _orig_populate = TechnicalMaintenance.onPopulateTechnicalMaintenance
-    def _patched_populate(self, *args, **kwargs):
-        from debug_utils import LOG_DEBUG
-        import BigWorld
-        LOG_DEBUG('---- STATS GET CREDITS ----', BigWorld.player().stats.get('credits'))
-        res = _orig_populate(self, *args, **kwargs)
-        return res
-    TechnicalMaintenance.onPopulateTechnicalMaintenance = _patched_populate
-
-patch_tech_maintenance_log_price()
-
-def loop_credits_update():
-    from gui.ClientUpdateManager import g_clientUpdateManager
-    import BigWorld
     def _loop():
         try:
-            g_clientUpdateManager.update({'stats': {'credits': 100000000, 'gold': 1000000}})
+            g_playerEvents.onClientUpdated({'stats': {'credits': 100000000, 'gold': 1000000}})
         except:
             pass
+        import BigWorld
         BigWorld.callback(1.0, _loop)
-    _loop()
-import BigWorld
-BigWorld.callback(5.0, loop_credits_update)
+    import BigWorld
+    BigWorld.callback(5.0, _loop)
 
 def patch_shop_requester():
     from gui.Scaleform.utils.requesters import ShopRequester
@@ -808,3 +763,100 @@ def force_shop_costs():
         pass
 
 force_shop_costs()
+
+
+
+
+
+
+
+
+
+
+def patch_techtree():
+    try:
+        from gui.Scaleform.techtree.data import NationTreeData
+        orig_dump = NationTreeData.dump
+        def dump_hook(self):
+            d = orig_dump(self)
+            if d.get("scrollIndex", -1) == -1 and len(d.get("nodes", [])) > 0:
+                d["scrollIndex"] = 0
+            return d
+        NationTreeData.dump = dump_hook
+    except Exception as e:
+        from debug_utils import LOG_ERROR
+        LOG_ERROR("patch_techtree error", e)
+
+patch_techtree()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def patch_techtree_get_file():
+    try:
+        from gui.mods.offhangar import _constants
+        with open("C:/Games/World_of_Tanks_0.08.02.00.00_EU_0543_SD/dump_nickname.log", "w") as fout:
+            fout.write("NICKNAME: " + str(_constants.OFFLINE_NICKNAME) + "\n")
+            fout.write("CONFIG_OPTIONS: " + str(_constants.CONFIG_OPTIONS) + "\n")
+    except Exception as e:
+        pass
+
+patch_techtree_get_file()

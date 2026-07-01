@@ -1,16 +1,9 @@
-"""
-Offline battle bootstrap for FakeServer.
-
-Real servers answer enqueue with BW callbacks (onEnqueued / onArenaCreated). With only
-FakeServer.doCmd* responses the client can exit or hang, so we replay the minimal chain.
-Compatible checks keep this safe across 0.8.x builds that differ slightly.
-"""
-
 import time
 import cPickle
 from debug_utils import LOG_DEBUG, LOG_CURRENT_EXCEPTION
 
 g_offline_models = []
+g_offline_enemies = []
 def _add_model(m):
 	global g_offline_models
 	g_offline_models.append(m)
@@ -20,6 +13,13 @@ def _add_model(m):
 import BigWorld
 try:
 	from projectilemover import ProjectileMover
+	def _safe_calc(self, r0, v0, gravity, isOwnShoot, tracerCameraPos):
+		import BigWorld
+		end = r0 + v0.scale(2000.0 / v0.length)
+		res = BigWorld.wg_collideSegment(BigWorld.player().spaceID, r0, end, 128)
+		hitPoint = res[0] if res else end
+		return (hitPoint, (hitPoint - r0).length / v0.length)
+	ProjectileMover._ProjectileMover__calcTrajectory = _safe_calc
 	g_projectile_mover = ProjectileMover()
 except Exception as e:
 	LOG_DEBUG('Could not init ProjectileMover:', e)
@@ -270,37 +270,140 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 		spawn_dir = Math.Vector3(0, 0, 3.1415926535)
 		try:
 			at = player.arena.arenaType
-			settings_path = 'spaces/%s/space.settings' % at.geometryName.split('/')[-1]
-			space_settings = ResMgr.openSection(settings_path)
-			LOG_DEBUG('OfflineBattle.SPACE_LOAD:', settings_path, space_settings is not None)
-			if space_settings is not None:
-				try:
-					if space_settings.has_key('startPosition'):
-						spawn_pos = space_settings.readVector3('startPosition')
-					if space_settings.has_key('startDirection'):
-						spawn_dir = space_settings.readVector3('startDirection')
-					LOG_DEBUG('OfflineBattle.spawn space.settings:', spawn_pos, spawn_dir)
-				except Exception:
-					pass
-
-			if space_settings is None or (spawn_pos.x == 0.0 and spawn_pos.y == 0.0 and spawn_pos.z == 0.0) or spawn_pos.y == 100.0:
+			if True:
 				xml_path = 'scripts/arena_defs/%s.xml' % at.geometryName.split('/')[-1]
 				section = ResMgr.openSection(xml_path)
 				LOG_DEBUG('OfflineBattle.XML_LOAD:', xml_path, section is not None)
 				if section is not None:
+					import debug_utils
+					debug_utils.LOG_DEBUG('DUMP ARENA DEFS:', section.keys(), section['gameplayTypes/ctf'].keys() if section.has_key('gameplayTypes/ctf') else 'no_ctf')
+					if section.has_key('gameplayTypes/ctf'):
+						ctf = section['gameplayTypes/ctf']
+						for t in ['team1', 'team2']:
+							if ctf.has_key('teamSpawnPoints/%s' % t):
+								debug_utils.LOG_DEBUG('SPAWN POINTS %s:' % t, ctf['teamSpawnPoints/%s' % t].keys())
+								for k, v in ctf['teamSpawnPoints/%s' % t].items():
+									debug_utils.LOG_DEBUG(' - ', k, type(v), v.asVector2)
 					gp = section['gameplayTypes/ctf']
+					if section is not None:
+						try:
+							with open('C:\\Games\\World_of_Tanks_0.08.02.00.00_EU_0543_SD\\arena_dump_root.txt', 'w') as f_out:
+								f_out.write('ROOT keys: ' + str(section.keys()) + '\n')
+								for k, v in section.items():
+									if k in ['teamSpawnPoints', 'teamBasePositions'] or 'team' in k:
+										f_out.write(' - ' + k + ' : ' + str(type(v)) + '\n')
+										if hasattr(v, 'keys'):
+											f_out.write('    keys: ' + str(v.keys()) + '\n')
+						except Exception as e:
+							pass
 					if gp is not None:
+						try:
+							with open('C:\\Games\\World_of_Tanks_0.08.02.00.00_EU_0543_SD\\arena_dump_gp.txt', 'w') as f_out:
+								f_out.write('ctf keys: ' + str(gp.keys()) + '\n')
+								for k, v in gp.items():
+									f_out.write(' - ' + k + ' : ' + str(type(v)) + '\n')
+									if hasattr(v, 'keys'):
+										f_out.write('    keys: ' + str(v.keys()) + '\n')
+										for k2, v2 in v.items():
+											f_out.write('    - ' + k2 + ' : ' + str(type(v2)) + '\n')
+											if hasattr(v2, 'keys'):
+												f_out.write('       keys: ' + str(v2.keys()) + '\n')
+												for k3, v3 in v2.items():
+													f_out.write('       - ' + k3 + ' asVec2:' + str(getattr(v3, 'asVector2', 'none')) + ' asStr:' + str(getattr(v3, 'asString', 'none')) + '\n')
+						except Exception as e:
+							import debug_utils
+							debug_utils.LOG_DEBUG('DUMP ERROR:', e)
+						
+						global g_offline_bases
+						g_offline_bases = {1: [], 2: []}
+						import debug_utils
+						try:
+							bp_node_all = gp['teamBasePositions']
+							if bp_node_all is not None:
+								debug_utils.LOG_DEBUG('teamBasePositions EXISTS! keys:', bp_node_all.keys())
+								for k, v in bp_node_all.items():
+									debug_utils.LOG_DEBUG(' - child:', k, v.keys())
+						except Exception as e:
+							debug_utils.LOG_DEBUG('teamBasePositions error:', e)
+
+						
+						for t_id in (1, 2):
+							bp_node = gp['teamBasePositions/team%d' % t_id]
+							if bp_node is not None:
+								items = bp_node.items()
+								if items:
+									for k, v in items:
+										import debug_utils
+										debug_utils.LOG_DEBUG('Base node child', t_id, k)
+										if v is not None and hasattr(v, 'asVector2'):
+											g_offline_bases[t_id].append(Math.Vector3(v.asVector2.x, 0.0, v.asVector2.y))
+										elif v is not None and hasattr(v, 'asVector3'):
+											g_offline_bases[t_id].append(Math.Vector3(v.asVector3.x, 0.0, v.asVector3.z))
+								else:
+									import gui.mods.offhangar.logging as __offlog
+									__offlog.LOG_DEBUG('LOUD: Base node DIRECT', t_id)
+									if hasattr(bp_node, 'asVector2'):
+										g_offline_bases[t_id].append(Math.Vector3(bp_node.asVector2.x, 0.0, bp_node.asVector2.y))
+									elif hasattr(bp_node, 'asVector3'):
+										g_offline_bases[t_id].append(Math.Vector3(bp_node.asVector3.x, 0.0, bp_node.asVector3.z))
+									elif hasattr(bp_node, 'asString'):
+										try:
+											parts = bp_node.asString.split()
+											g_offline_bases[t_id].append(Math.Vector3(float(parts[0]), 0.0, float(parts[1])))
+										except Exception as e:
+											pass
+							import gui.mods.offhangar.logging as __offlog
+							__offlog.LOG_DEBUG('LOUD: g_offline_bases is now:', g_offline_bases)
+						
+						import debug_utils
+						debug_utils.LOG_DEBUG('Parsed bases:', g_offline_bases)
+						
 						sp = gp['teamSpawnPoints/team1']
 						bp = gp['teamBasePositions/team1']
-						if sp is not None and len(sp.keys()) > 0:
+						
+						# PRIORITY: Base Position first! This prevents spawning inside/on top of buildings 
+						# at map edges (Spawn points are often behind base and hit testers might hit roofs)
+						_found_spawn = False
+						if bp is not None:
+							import debug_utils
+							debug_utils.LOG_DEBUG("DUMPING ALL SPAWNS FOR", map_name)
+							if sp is not None:
+								for key, val in sp.items():
+									vec2 = getattr(val, 'asVector2', None)
+									if vec2 is None:
+										try:
+											parts = val.asString.split()
+											vec2 = Math.Vector2(float(parts[0]), float(parts[1]))
+										except: pass
+									debug_utils.LOG_DEBUG("SPAWN POINT", key, vec2)
+							for key, val in bp.items():
+								if 'position' in key or key.isdigit():
+									vec2 = getattr(val, 'asVector2', None)
+									if vec2 is None:
+										try:
+											parts = val.asString.split()
+											vec2 = Math.Vector2(float(parts[0]), float(parts[1]))
+										except: pass
+									if vec2 is not None:
+										y = 100.0
+										try:
+											import BigWorld
+											hit = BigWorld.wg_collideSegment(player.spaceID, Math.Vector3(vec2.x, 1000.0, vec2.y), Math.Vector3(vec2.x, -1000.0, vec2.y), 128)
+											if hit is not None:
+												y = hit[0].y
+										except: pass
+										spawn_pos = Math.Vector3(vec2.x, y, vec2.y)
+										LOG_DEBUG('OfflineBattle.spawn bp pos:', spawn_pos)
+										_found_spawn = True
+										break
+						
+						if not _found_spawn and sp is not None and len(sp.keys()) > 0:
 							for key, val in sp.items():
-								if 'position' in key:
+								if val is not None and hasattr(val, 'asVector2'):
 									vec2 = val.asVector2
-									# Find terrain height at this x, z!
 									y = 100.0
 									try:
 										import BigWorld
-										# Cast a ray from sky to ground
 										hit = BigWorld.wg_collideSegment(player.spaceID, Math.Vector3(vec2.x, 1000.0, vec2.y), Math.Vector3(vec2.x, -1000.0, vec2.y), 128)
 										if hit is not None:
 											y = hit[0].y
@@ -308,20 +411,18 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 									spawn_pos = Math.Vector3(vec2.x, y, vec2.y)
 									LOG_DEBUG('OfflineBattle.spawn pos:', spawn_pos)
 									break
-						elif bp is not None:
-							for key, val in bp.items():
-								if 'position' in key or key.isdigit():
-									vec2 = val.asVector2
-									y = 100.0
-									try:
-										import BigWorld
-										hit = BigWorld.wg_collideSegment(player.spaceID, Math.Vector3(vec2.x, 1000.0, vec2.y), Math.Vector3(vec2.x, -1000.0, vec2.y), 128)
-										if hit is not None:
-											y = hit[0].y
-									except: pass
-									spawn_pos = Math.Vector3(vec2.x, y, vec2.y)
-									LOG_DEBUG('OfflineBattle.spawn bp pos:', spawn_pos)
-									break
+						
+						# HACK: Hardcoded safe spawns for known problematic maps where roofs/buildings are hit
+						import math
+						try:
+							if map_name == '04_himmelsdorf':
+								spawn_pos = Math.Vector3(17.1, 10.0, 300.0) # North plaza (Team 2 base) is very safe and open
+								spawn_dir = Math.Vector3(0, 0, math.radians(180)) # face south
+								import BigWorld
+								hit = BigWorld.wg_collideSegment(player.spaceID, Math.Vector3(spawn_pos.x, 1000.0, spawn_pos.z), Math.Vector3(spawn_pos.x, -1000.0, spawn_pos.z), 128)
+								if hit is not None: spawn_pos.y = hit[0].y
+								LOG_DEBUG('OfflineBattle.spawn HARDCODED pos:', spawn_pos)
+						except Exception as e: pass
 		except Exception as e:
 			LOG_DEBUG('OfflineBattle.XML_ERROR:', str(e))
 
@@ -779,6 +880,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 						except: pass
 					player.inputHandler = None
 			except Exception: pass
+
 			try:
 				from gui import WindowsManager
 				if hasattr(WindowsManager.g_windowsManager, 'destroyBattle'):
@@ -788,18 +890,34 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 				if hasattr(WindowsManager.g_windowsManager, 'showLobby'):
 					WindowsManager.g_windowsManager.showLobby()
 			except Exception: pass
+
 			try:
+				import BigWorld
 				BigWorld.camera(None)
 				BigWorld.worldDrawEnabled(True)
-			except Exception: pass
+			except: pass
+
 			try:
 				from gui.Scaleform.utils.HangarSpace import g_hangarSpace
 				if g_hangarSpace is not None:
 					try: g_hangarSpace.destroy()
 					except Exception: pass
+					
+					# Prevent showLobby from destroying the space
+					def _mock_refreshSpace(self, isPremium):
+						pass
+					g_hangarSpace.__class__.refreshSpace = _mock_refreshSpace
+					
+					# Force premium
+					def _mock_getSpacePath(self, isPremium):
+						return self._HangarSpace__space.getDefSpacePath(True)
+					g_hangarSpace.__class__._HangarSpace__getSpacePath = _mock_getSpacePath
+					
+					# Init manually
 					g_hangarSpace.init(True)
-					g_hangarSpace.refreshVehicle()
 			except Exception: pass
+
+
 			try:
 				global g_offline_models
 				for m in list(g_offline_models):
@@ -1114,6 +1232,250 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 			math.degrees(_phys_chassisRotSpd), _phys_terrainResist[0], _phys_terrainResist[1], _phys_terrainResist[2],
 			_phys_specificFriction))
 		_battle_finished = [False]
+		
+		global g_base_capture
+		g_base_capture = {1: {'points': 0}, 2: {'points': 0}}
+		
+		global g_capture_tick_ref
+		def trigger_battle_results(winnerTeam=1):
+			import BigWorld
+			player = BigWorld.player()
+			if player is None: return
+			try:
+				from gui.SystemMessages import SM_TYPE, pushMessage
+				pushMessage('Offline battle finished. Returning to Hangar...'.encode('utf-8'), SM_TYPE.Information)
+			except Exception as e: pass
+			
+			try:
+				import MusicController
+				if hasattr(MusicController, 'g_musicController') and MusicController.g_musicController:
+					_mc = MusicController.g_musicController
+					try: _mc.stop()
+					except: pass
+					evt = None
+					p_team = getattr(player, 'team', 1)
+					if winnerTeam == p_team:
+						evt = getattr(MusicController, 'MUSIC_EVENT_COMBAT_VICTORY', getattr(MusicController, 'MUSIC_EVENT_VICTORY', 'music_victory'))
+					elif winnerTeam != 0:
+						evt = getattr(MusicController, 'MUSIC_EVENT_COMBAT_LOSE', getattr(MusicController, 'MUSIC_EVENT_LOSE', 'music_lose'))
+					else:
+						evt = getattr(MusicController, 'MUSIC_EVENT_COMBAT_DRAW', getattr(MusicController, 'MUSIC_EVENT_DRAW', 'music_draw'))
+					try: _mc.play(evt)
+					except: pass
+			except Exception as e: pass
+			
+			try:
+				import battle_results_shared
+				mock_arena_id = 999
+				
+				v_id = getattr(player, 'playerVehicleID', 1)
+				p_max_health = getattr(getattr(player, 'vehicleTypeDescriptor', None), 'maxHealth', 1000)
+				p_health = getattr(getattr(player, 'vehicle', None), 'health', p_max_health)
+				
+				_player_mock = globals().get('G_MOCK_VEHICLES', {}).get(getattr(player, 'playerVehicleID', -1))
+				_p_killer_id = getattr(_player_mock, 'last_killer_id', 255) if p_health <= 0 else 0
+				
+				p_team = getattr(player, 'team', 1)
+				p_dbid = getattr(player, 'databaseID', 1)
+				p_name = getattr(player, 'name', 'Player')
+				p_cd = getattr(getattr(getattr(player, 'vehicleTypeDescriptor', None), 'type', None), 'compactDescr', 0)
+				
+				players_dict = {p_dbid: {'name': p_name, 'clanDBID': 0, 'clanAbbrev': '', 'prebattleID': 0, 'team': p_team, 'igrType': 0}}
+				vehicles_dict = {v_id: {'health': p_health, 'credits': 10000, 'xp': 1000, 'shots': 10, 'hits': 8, 'he_hits': 0, 'pierced': 8, 'damageDealt': 0, 'damageAssisted': 0, 'damageReceived': max(0, p_max_health - p_health), 'shotsReceived': 0, 'spotted': 0, 'damaged': 0, 'kills': 0, 'tdamageDealt': 0, 'tkills': 0, 'isTeamKiller': False, 'capturePoints': 0, 'droppedCapturePoints': 0, 'mileage': 100, 'lifeTime': 300, 'killerID': _p_killer_id, 'achievements': [], 'repair': 0, 'freeXP': 50, 'details': {}, 'accountDBID': p_dbid, 'team': p_team, 'typeCompDescr': p_cd, 'gold': 0}}
+				
+				for vid, vinfo in getattr(player.arena, 'vehicles', {}).items():
+					if vid == v_id: continue
+					bot_team = vinfo.get('team', 2)
+					bot_name = vinfo.get('name', 'Bot')
+					bot_dbid = vid
+					td = vinfo.get('vehicleType', None)
+					td_type = getattr(td, 'type', None)
+					bot_cd = getattr(td_type, 'compactDescr', 0)
+					
+					players_dict[bot_dbid] = {'name': bot_name, 'clanDBID': 0, 'clanAbbrev': '', 'prebattleID': 0, 'team': bot_team, 'igrType': 0}
+					
+					is_killed = not vinfo.get('isAlive', True)
+					bot_hp = getattr(td, 'maxHealth', 1000)
+					if is_killed: bot_hp = 0
+					
+					vehicles_dict[vid] = {'health': bot_hp, 'credits': 0, 'xp': 0, 'shots': 0, 'hits': 0, 'he_hits': 0, 'pierced': 0, 'damageDealt': 0, 'damageAssisted': 0, 'damageReceived': getattr(td, 'maxHealth', 1000) - bot_hp, 'shotsReceived': 0, 'spotted': 0, 'damaged': 0, 'kills': 0, 'tdamageDealt': 0, 'tkills': 0, 'isTeamKiller': False, 'capturePoints': 0, 'droppedCapturePoints': 0, 'mileage': 10, 'lifeTime': 300, 'killerID': v_id if is_killed else 0, 'achievements': [], 'repair': 0, 'freeXP': 0, 'details': {}, 'accountDBID': bot_dbid, 'team': bot_team, 'typeCompDescr': bot_cd, 'gold': 0}
+				
+				mock_res = {
+					'arenaUniqueID': mock_arena_id,
+					'personal': {'health': p_health, 'credits': 10000, 'xp': 1000, 'shots': 10, 'hits': 8, 'he_hits': 0, 'pierced': 8, 'damageDealt': 0, 'damageAssisted': 0, 'damageReceived': 0, 'shotsReceived': 0, 'spotted': 0, 'damaged': 0, 'kills': 0, 'tdamageDealt': 0, 'tkills': 0, 'isTeamKiller': False, 'capturePoints': 0, 'droppedCapturePoints': 0, 'mileage': 100, 'lifeTime': 300, 'killerID': _p_killer_id, 'achievements': [], 'repair': 0, 'freeXP': 50, 'details': {}, 'accountDBID': p_dbid, 'team': p_team, 'typeCompDescr': p_cd, 'gold': 0, 'xpPenalty': 0, 'creditsPenalty': 0, 'creditsContributionIn': 0, 'creditsContributionOut': 0, 'tmenXP': 0, 'eventCredits': 0, 'eventGold': 0, 'eventXP': 0, 'eventFreeXP': 0, 'eventTMenXP': 0, 'autoRepairCost': 0, 'autoLoadCost': (0, 0), 'autoEquipCost': (0, 0), 'isPremium': True, 'premiumXPFactor10': 15, 'premiumCreditsFactor10': 15, 'dailyXPFactor10': 10, 'aogasFactor10': 10, 'markOfMastery': 0, 'dossierPopUps': []},
+					'common': {'arenaTypeID': getattr(player.arena, 'arenaTypeID', 1), 'arenaCreateTime': __import__('time').time(), 'winnerTeam': winnerTeam, 'finishReason': 1, 'duration': 300, 'bonusType': 1, 'guiType': 1, 'vehLockMode': 0},
+					'players': players_dict,
+					'vehicles': vehicles_dict
+				}
+				
+				
+				
+				try:
+					from gui import WindowsManager
+					if hasattr(WindowsManager.g_windowsManager, 'showBattleResults'):
+						WindowsManager.g_windowsManager.showBattleResults(mock_arena_id)
+				except: pass
+				
+			except Exception as e:
+				import traceback
+				import gui.mods.offhangar.logging as __offlog
+				__offlog.LOG_DEBUG('CRITICAL ERROR IN TRIGGER BATTLE RESULTS:', e)
+				__offlog.LOG_DEBUG(traceback.format_exc())
+				
+			# Now clean up and leave arena!
+			# Restore original stats object which was replaced with FakeStats
+			if hasattr(player, '_offhangar_orig_stats') and player._offhangar_orig_stats is not None:
+				player.stats = player._offhangar_orig_stats
+			
+			_leaveArena()
+			player.onBecomeNonPlayer()
+			
+			# HACK: Because we triggered onBecomeNonPlayer manually but never call
+			# onBecomePlayer to avoid crashing the offline mock state, we must manually
+			# re-bind the requester modules and un-ignore them!
+			for helper in ('syncData', 'inventory', 'stats', 'trader', 'shop', 'dossierCache', 'battleResultsCache', 'questProgress'):
+				h = getattr(player, helper, None)
+				if hasattr(h, 'setAccount'):
+					try: h.setAccount(player)
+					except: pass
+				if hasattr(h, 'onAccountBecomePlayer'):
+					try: h.onAccountBecomePlayer()
+					except: pass
+
+		def _capture_tick():
+			import gui.mods.offhangar.logging as __offlog
+			__offlog.LOG_DEBUG('LOUD: Capture tick started running!')
+			try:
+				if _battle_finished[0]: return
+				import BigWorld
+				player = BigWorld.player()
+				if player is None or _battle_finished[0]:
+					return
+				
+				# Get alive vehicles per team
+				vehs_by_team = {1: [], 2: []}
+				if getattr(player, 'isVehicleAlive', True):
+					vehs_by_team[1].append(player) # player is always team 1
+					
+				_mock_vehicles = globals().get('G_MOCK_VEHICLES', {})
+				for e_mock in _mock_vehicles.values():
+					if getattr(e_mock, 'isVehicleAlive', True) and getattr(e_mock, '_team', 2) in vehs_by_team:
+						vehs_by_team[e_mock._team].append(e_mock)
+				
+				# Check base distances
+				for base_team, bases in g_offline_bases.items():
+					if not bases: continue
+					
+					invading_team = 2 if base_team == 1 else 1
+					
+					invaders_count = 0
+					for invader in vehs_by_team[invading_team]:
+						for base_pos in bases:
+							import BigWorld
+							if invader == BigWorld.player():
+								inv_x = veh_pos[0]
+								inv_z = veh_pos[2]
+							else:
+								inv_x = invader.position.x
+								inv_z = invader.position.z
+							dx = inv_x - base_pos.x
+							dz = inv_z - base_pos.z
+							import gui.mods.offhangar.logging as __offlog
+							__offlog.LOG_DEBUG('LOUD: Distance to base', base_team, 'is', dx*dx + dz*dz, 'pos:', inv_x, inv_z, 'base:', base_pos.x, base_pos.z)
+							if dx*dx + dz*dz <= 2500.0: # 50m radius
+								invaders_count += 1
+								break
+					
+					defenders_count = 0
+					for defender in vehs_by_team[base_team]:
+						for base_pos in bases:
+							import BigWorld
+							if defender == BigWorld.player():
+								def_x = veh_pos[0]
+								def_z = veh_pos[2]
+							else:
+								def_x = defender.position.x
+								def_z = defender.position.z
+							dx = def_x - base_pos.x
+							dz = def_z - base_pos.z
+							if dx*dx + dz*dz <= 2500.0:
+								defenders_count += 1
+								break
+					
+					state = g_base_capture[base_team]
+					old_points = state['points']
+					
+					# Handle transition from PREBATTLE to BATTLE
+					if getattr(player.arena, 'period', 0) == 2 and BigWorld.serverTime() >= getattr(player.arena, 'periodEndTime', 0):
+						import gui.mods.offhangar.logging as __offlog
+						__offlog.LOG_DEBUG('LOUD: TRANSITION TO BATTLE PERIOD')
+						player.arena.period = 3
+						player.arena.periodLength = 900
+						player.arena.periodEndTime = BigWorld.serverTime() + 900
+						player.arena.onPeriodChange(3, player.arena.periodEndTime, 900, 0)
+
+					
+					import debug_utils
+					if state['points'] != old_points or invaders_count > 0:
+						debug_utils.LOG_DEBUG('Capture tick: team', base_team, 'invaders:', invaders_count, 'defenders:', defenders_count, 'points:', state['points'], 'serverTime:', BigWorld.serverTime())
+					
+					if invaders_count > 0 and defenders_count == 0:
+						state['points'] = min(100, state['points'] + min(invaders_count, 3))
+					elif invaders_count == 0:
+						state['points'] = 0
+						
+					# Removed old hack
+						
+					if state['points'] != old_points or invaders_count > 0:
+						import gui.mods.offhangar.logging as __offlog
+						__offlog.LOG_DEBUG('LOUD: PERIOD:', getattr(player.arena, 'period', None), 'SERVERTIME:', BigWorld.serverTime(), 'PERIODENDTIME:', getattr(player.arena, 'periodEndTime', None))
+						__offlog.LOG_DEBUG('Capture UI updating points! base:', base_team, 'points:', state['points'], 'invaders:', invaders_count)
+						try:
+							import gui.Scaleform.Battle
+							if not hasattr(gui.Scaleform.Battle.TeamBasesPanel, '_patched_update'):
+								orig = gui.Scaleform.Battle.TeamBasesPanel._TeamBasesPanel__onTeamBasePointsUpdate
+								def _hook(self, team, baseID, points, capturingStopped):
+									import gui.mods.offhangar.logging as __offlog
+									__offlog.LOG_DEBUG('LOUD: UI HOOK! team', team, 'base', baseID, 'pts', points, 'stop', capturingStopped)
+									try:
+										orig(self, team, baseID, points, capturingStopped)
+										__offlog.LOG_DEBUG('LOUD: UI HOOK orig executed successfully!')
+									except Exception as e:
+										__offlog.LOG_DEBUG('LOUD: UI HOOK EXCEPTION:', e)
+								gui.Scaleform.Battle.TeamBasesPanel._TeamBasesPanel__onTeamBasePointsUpdate = _hook
+								gui.Scaleform.Battle.TeamBasesPanel._patched_update = True
+						except Exception as e:
+							__offlog.LOG_DEBUG('LOUD: UI HOOK INIT ERROR:', e)
+						try:
+							player.arena.onTeamBasePointsUpdate(base_team, 0, state['points'], defenders_count > 0)
+						except Exception as e:
+							__offlog.LOG_DEBUG('LOUD: Capture UI Error:', e)
+					
+					if state['points'] >= 100:
+						try:
+							player.arena.onTeamBaseCaptured(1, base_team)
+						except: pass
+						_battle_finished[0] = True
+						
+						# Stop the battle!
+						try: player.arena.onPeriodChange(4, BigWorld.serverTime() + 5.0, 5.0, 0) # ArenaPeriod.AFTERBATTLE
+						except: pass
+						
+						# Trigger battle results in 5 seconds
+						import BigWorld
+						BigWorld.callback(5.0, lambda: trigger_battle_results(3 - base_team))
+						
+			except Exception as e:
+				import gui.mods.offhangar.logging as __offlog
+				__offlog.LOG_DEBUG('LOUD: Capture Tick Error:', e)
+			finally:
+				if not _battle_finished[0]:
+					BigWorld.callback(1.0, _capture_tick)
+					
+		g_capture_tick_ref = _capture_tick
+		BigWorld.callback(5.0, _capture_tick)
+		
+		global g_aih_tick_ref
 		def _aih_tick():
 			try:
 				import BigWorld, Math, Keys, math
@@ -1128,6 +1490,13 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 				_last_tick_time[0] = current_time
 				if dt <= 0.0 or dt > 0.5:
 					dt = 0.016 # fallback to 60fps
+				
+				import debug_utils
+				if not hasattr(player, '_debug_dump_done_6'):
+					player._debug_dump_done_6 = True
+					debug_utils.LOG_DEBUG('AIH_TICK DUMP AT START!')
+					_mock_vehicles = globals().get('G_MOCK_VEHICLES', {})
+					debug_utils.LOG_DEBUG('AIH_TICK keys:', _mock_vehicles.keys())
 					
 				def _get_terrain_ypr(spaceID, pos, yaw, length=5.0, width=3.0):
 					import math, BigWorld, Math
@@ -1398,7 +1767,8 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 				try:
 					cur_speed = abs(_veh_velocity[0])
 					max_speed = _phys_speedFwd
-					load = min(1.0, (cur_speed / max_speed) + 0.2 + (abs(throttle) * 0.3))
+					power_fraction = min(1.0, (cur_speed / max_speed) + (abs(throttle) * 0.3))
+					load = 1.0 + (power_fraction * 2.0) # Map to WoT engine modes (1=idle, 2=mid, 3=high)
 					if _engine_state['snd1']:
 						p = _engine_state['snd1'].param('load')
 						if p: p.value = load
@@ -1512,13 +1882,22 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 					dist = math.sqrt(dx*dx + dz*dz)
 					
 					try:
-						from projectile_trajectory import getShotAngles
-						mat = BigWorld.player().getOwnVehicleMatrix()
-						# Vypocet presnych uhlu vcetne zapocteni vsech ofsetu veze a balistiky!
-						tYaw, gPitch = getShotAngles(td, mat, (turret_yaw[0], gun_pitch[0]), shot_point)
-						local_target_yaw = tYaw
-						target_pitch = gPitch
-						target_yaw = veh_yaw[0] + local_target_yaw
+						if _gun_state.get('rmb_down', False) and not getattr(player, '_autoaim_target', None) and 'locked_local_yaw' in _gun_state:
+							local_target_yaw = _gun_state['locked_local_yaw']
+							target_pitch = _gun_state['locked_local_pitch']
+							target_yaw = veh_yaw[0] + local_target_yaw
+						else:
+							if getattr(player, '_autoaim_target', None) and getattr(player._autoaim_target, 'health', 0) > 0:
+								t_pos = Math.Vector3(player._autoaim_target.position)
+								t_pos.y += 1.0
+								shot_point = t_pos
+							from projectile_trajectory import getShotAngles
+							mat = BigWorld.player().getOwnVehicleMatrix()
+							# Vypocet presnych uhlu vcetne zapocteni vsech ofsetu veze a balistiky!
+							tYaw, gPitch = getShotAngles(td, mat, (turret_yaw[0], gun_pitch[0]), shot_point)
+							local_target_yaw = tYaw
+							target_pitch = gPitch
+							target_yaw = veh_yaw[0] + local_target_yaw
 					except Exception as e:
 						# Fallback k jednoduché trigonometrii (nepřesné)
 						target_yaw = math.atan2(dx, dz)
@@ -1563,6 +1942,61 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 					if diff_yaw < -math.pi: diff_yaw += 2*math.pi
 					
 					_gun_state['yaw_penalty'] = abs(diff_yaw) * 0.1
+					
+					try:
+						gun_dir = shot_point - last_true_gun_pos
+						if gun_dir.length > 0.001:
+							gun_dir.normalise()
+							_mock_vehicles = globals().get('G_MOCK_VEHICLES', {})
+							
+							import debug_utils
+							if not hasattr(player, '_debug_dump_done_5'):
+								player._debug_dump_done_5 = True
+								debug_utils.LOG_DEBUG('AIH_TICK DUMP keys:', _mock_vehicles.keys())
+								for _k, _v in _mock_vehicles.items():
+									debug_utils.LOG_DEBUG(' - Veh', _k, getattr(_v, '_bot_team', 'N/A'))
+							
+							closest_bot = None
+							min_dist = 9999.0
+							for eid, m_veh in _mock_vehicles.iteritems():
+								if eid == getattr(player, 'playerVehicleID', -1): continue
+								if getattr(m_veh, 'health', 0) <= 0: continue
+								b_pos = Math.Vector3(m_veh.position)
+								b_vec = b_pos - last_true_gun_pos
+								proj_len = b_vec.dot(gun_dir)
+								if getattr(m_veh, '_bot_team', None) is not None:
+									LOG_DEBUG('REAL_RAYCAST bot %s: proj_len=%.2f, b_pos=(%.1f,%.1f,%.1f), b_vec_len=%.2f' % (eid, proj_len, b_pos.x, b_pos.y, b_pos.z, b_vec.length))
+								if proj_len > 0:
+									proj_pt = last_true_gun_pos + gun_dir.scale(proj_len)
+									dist_to_ray = (b_pos - proj_pt).length
+									if getattr(m_veh, '_bot_team', None) is not None:
+										LOG_DEBUG('REAL_RAYCAST HIT bot %s: dist_to_ray=%.2f' % (eid, dist_to_ray))
+									if dist_to_ray < 2.5:
+										if proj_len < min_dist:
+											min_dist = proj_len
+											closest_bot = m_veh
+							prev_bot = getattr(player, '_outlined_bot', None)
+							if prev_bot and prev_bot != closest_bot:
+								try:
+									if hasattr(prev_bot, 'bw_entity') and prev_bot.bw_entity:
+										BigWorld.wgDelEdgeDetectEntity(prev_bot.bw_entity)
+								except Exception as e:
+									pass
+								player._outlined_bot = None
+							if closest_bot and prev_bot != closest_bot:
+								color = 2 if getattr(closest_bot, '_bot_team', 2) == getattr(player, '_offhangar_team', 1) else 1
+								try:
+									if hasattr(closest_bot, 'bw_entity') and closest_bot.bw_entity:
+										BigWorld.wgAddEdgeDetectEntity(closest_bot.bw_entity, color)
+										LOG_DEBUG('REAL_RAYCAST OUTLINE APPLIED TO BOT', closest_bot.bw_entity.id)
+									else:
+										LOG_DEBUG('REAL_RAYCAST bot has no bw_entity!')
+								except Exception as e:
+									LOG_DEBUG('Outline dummy err:', str(e))
+								player._outlined_bot = closest_bot
+					except Exception as e:
+						import debug_utils
+						debug_utils.LOG_DEBUG('Outline error:', str(e))
 					
 					if abs(diff_yaw) < _turret_rot_speed:
 						turret_yaw[0] = local_target_yaw
@@ -2022,7 +2456,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								# NO ENEMIES! STOP!
 								m_veh._veh_velocity = max(0.0, m_veh._veh_velocity - 20.0 * dt)
 								m_veh._veh_turn_velocity = 0.0
-								continue
+								target_pos = (m_veh.position.x, m_veh.position.y, m_veh.position.z)
 							dx = target_pos[0] - m_veh.position.x
 							dz = target_pos[2] - m_veh.position.z
 							dist = math.sqrt(dx*dx + dz*dz)
@@ -2112,6 +2546,30 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							
 							if throttle == 0 and abs(m_veh._veh_velocity) < 0.05: m_veh._veh_velocity = 0.0
 							
+							try:
+								if not getattr(m_veh, '_snd_init', False):
+									_engine_d = getattr(_td, 'engine', None) if _td else None
+									_chassis_d = getattr(_td, 'chassis', None) if _td else None
+									if hasattr(_td, 'engine') and isinstance(_td.engine, dict): _engine_d = _td.engine
+									if hasattr(_td, 'chassis') and isinstance(_td.chassis, dict): _chassis_d = _td.chassis
+									if _engine_d and hasattr(m_veh, '_chassis_model') and getattr(m_veh._chassis_model, 'inWorld', False): 
+										m_veh._snd_engine = m_veh._chassis_model.playSound(_engine_d['sound'])
+									if _chassis_d and hasattr(m_veh, '_chassis_model') and getattr(m_veh._chassis_model, 'inWorld', False): 
+										m_veh._snd_tracks = m_veh._chassis_model.playSound(_chassis_d['sound'])
+									if getattr(m_veh, '_chassis_model', None) and m_veh._chassis_model.inWorld: m_veh._snd_init = True
+								
+								cur_speed = abs(m_veh._veh_velocity)
+								power_fraction = min(1.0, (cur_speed / bot_speedFwd) + (abs(throttle) * 0.3))
+								load = 1.0 + (power_fraction * 2.0)
+								
+								if getattr(m_veh, '_snd_engine', None):
+									p = m_veh._snd_engine.param('load')
+									if p: p.value = load
+								if getattr(m_veh, '_snd_tracks', None):
+									p = m_veh._snd_tracks.param('speed')
+									if p: p.value = cur_speed / bot_speedFwd
+							except Exception as _e: pass
+							
 							if m_veh._veh_velocity != 0.0:
 								if _check_horizontal_collision(player.spaceID, m_veh.position, m_veh.yaw, m_veh._veh_velocity, _td):
 									m_veh._veh_velocity = 0.0
@@ -2155,6 +2613,11 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							
 							m_veh.matrix.setRotateYPR(_b_ypr)
 							m_veh.matrix.translation = m_veh.position
+							
+							try:
+								if getattr(m_veh, 'bw_entity', None) is not None and getattr(m_veh.bw_entity, 'filter', None) is not None:
+									m_veh.bw_entity.filter.set(BigWorld.time(), player.spaceID, m_veh.bw_entity.id, m_veh.position, (m_veh.matrix.roll, m_veh.matrix.pitch, m_veh.matrix.yaw), 0)
+							except: pass
 							
 							if hasattr(m_veh, '_chassis_model'):
 								if not getattr(m_veh, '_servo_added', False):
@@ -2216,16 +2679,23 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								m_veh._t_mat.setRotateYPR((m_veh._turret_yaw, 0, 0))
 									
 							# Strelba bota na hrace
-							if getattr(m_veh, '_ai_shoot_timer', None) is None: m_veh._ai_shoot_timer = 0
+							if getattr(m_veh, '_ai_shoot_timer', None) is None:
+								m_veh._ai_shoot_timer = 0
+								m_veh._ai_clip_size = 1
+								m_veh._ai_clip = 1
+								m_veh._ai_reload_intra = 0.0
+								m_veh._ai_reload_full = 3.0
+								try:
+									_g = getattr(_td, 'gun', {}) if _td else {}
+									if isinstance(_g, dict):
+										if 'reloadTime' in _g: m_veh._ai_reload_full = float(_g['reloadTime'])
+										if 'clip' in _g and len(_g['clip']) == 2:
+											m_veh._ai_clip_size = int(_g['clip'][0])
+											m_veh._ai_reload_intra = float(_g['clip'][1])
+											m_veh._ai_clip = m_veh._ai_clip_size
+								except: pass
+								
 							m_veh._ai_shoot_timer += dt
-							
-							bot_reload = 3.0
-							try:
-								if _td and hasattr(_td, 'gun') and 'reloadTime' in _td.gun:
-									bot_reload = float(_td.gun['reloadTime'])
-								elif isinstance(getattr(_td, 'gun', None), dict) and 'reloadTime' in _td.gun:
-									bot_reload = float(_td.gun['reloadTime'])
-							except: pass
 							
 							# Zjistit absolutní úhel, kam míří dělo
 							abs_gun_yaw = m_veh.yaw + getattr(m_veh, '_turret_yaw', 0.0)
@@ -2233,9 +2703,15 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							while gun_diff > math.pi: gun_diff -= 2*math.pi
 							while gun_diff < -math.pi: gun_diff += 2*math.pi
 							
+							bot_reload = m_veh._ai_reload_intra if (m_veh._ai_clip_size > 1 and m_veh._ai_clip > 0 and m_veh._ai_clip < m_veh._ai_clip_size) else m_veh._ai_reload_full
+							
 							# Vystřelí jen když míří na hráče (tolerance +- 0.15 rad = ~8.5 stupně)
 							if m_veh._ai_shoot_timer > bot_reload and dist < 150.0 and abs(gun_diff) < 0.15:
 								m_veh._ai_shoot_timer = 0
+								if m_veh._ai_clip_size > 1:
+									m_veh._ai_clip -= 1
+									if m_veh._ai_clip <= 0:
+										m_veh._ai_clip = m_veh._ai_clip_size
 								try:
 									if g_projectile_mover and _td:
 										from items import vehicles
@@ -2255,6 +2731,19 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 											start_p = Math.Vector3(m_veh.position.x, m_veh.position.y + 1.5, m_veh.position.z)
 											_cam_pos = BigWorld.camera().position if BigWorld.camera() else start_p
 											g_projectile_mover.add(random.randint(10000, 99999), _effectsDescr, _gravity, start_p, _vel, start_p, True, _cam_pos)
+
+											try:
+												_sound_event = '/tanks/guns/gun_small/gun_small_20-45mm'
+												_b_td = getattr(m_veh, 'typeDescriptor', None)
+												if _b_td:
+													if hasattr(_b_td.gun, 'effects') and 'shotSound' in _b_td.gun.effects:
+														_sound_event = _b_td.gun.effects['shotSound']
+													elif isinstance(_b_td.gun, dict) and 'effects' in _b_td.gun and 'shotSound' in _b_td.gun['effects']:
+														_sound_event = _b_td.gun['effects']['shotSound']
+													elif isinstance(_b_td.gun, dict) and 'shots' in _b_td.gun and len(_b_td.gun['shots']) > 0 and 'shotSound' in _b_td.gun['shots'][0]:
+														_sound_event = _b_td.gun['shots'][0]['shotSound']
+												if hasattr(m_veh, '_chassis_model'): m_veh._chassis_model.playSound(_sound_event)
+											except: pass
 											
 											player_mock = mock_vehicles.get(getattr(player, 'playerVehicleID', -1))
 											if player_mock:
@@ -2307,16 +2796,100 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 															auto_bounce = True
 															
 													dmg = 0
+													# DIRECTION AND FLASH FOR ALL HITS
+													try:
+														px = player_mock.position
+														import math
+														import BigWorld
+														
+														# Left/Right is now CORRECT, but Front/Back is inverted.
+														# Keep X inverted, and INVERT Z as well.
+														dx = -(m_veh.position[0] - px[0])
+														dz = -(m_veh.position[2] - px[2])
+														hitDirYaw = math.atan2(dx, dz)
+														
+														if hasattr(player, 'inputHandler') and player.inputHandler:
+															_aim = getattr(player.inputHandler, 'aim', None)
+															if _aim and hasattr(_aim, 'showHit'):
+																isDamage = not auto_bounce and (pierce_rng >= eff_armor or 'HE' in _shot['shell']['name'])
+																_aim.showHit(hitDirYaw, isDamage)
+														
+														if isDamage:
+															fba = Math.Vector4Animation()
+															fba.keyframes = [(0.0, Math.Vector4(1.0, 0.0, 0.0, 0.7)), (0.3, Math.Vector4(1.0, 0.0, 0.0, 0.7)), (1.5, Math.Vector4(1.0, 0.0, 0.0, 0.0))]
+															fba.duration = 1.5
+															BigWorld.flashBangAnimation(fba)
+															def remove_fba(f=fba):
+																try: BigWorld.removeFlashBangAnimation(f)
+																except: pass
+															BigWorld.callback(1.4, remove_fba)
+													except Exception as e:
+														LOG_DEBUG('HitDir calc err:', e)
+														
 													if auto_bounce or (pierce_rng < eff_armor and 'HE' not in _shot['shell']['name']):
 														LOG_DEBUG('BOT RICOCHET!')
-														import SoundGroups
-														pass # removed playSound2D
+														try:
+															_fm = BigWorld.player().newFakeModel()
+															BigWorld.addModel(_fm)
+															_fm.position = BigWorld.camera().position
+															snd = _fm.getSound('/hits/hits/tank_hit_armor_ricochet')
+															if snd: snd.play()
+															def _rem_fm(f=_fm):
+																try: BigWorld.delModel(f)
+																except: pass
+															BigWorld.callback(3.0, _rem_fm)
+														except Exception as ex:
+															LOG_DEBUG('Ricochet FM err:', ex)
+														try:
+															if hasattr(player.inputHandler, 'ctrl') and player.inputHandler.ctrl:
+																cam = getattr(player.inputHandler.ctrl, 'camera', None)
+																_dir = Math.Vector3(dx, 0, dz)
+																_dir.normalise()
+																if cam and hasattr(cam, 'applyImpulse'):
+																	cam.applyImpulse(_dir, 0.5)
+																elif cam and hasattr(cam, 'impulseOscillator') and cam.impulseOscillator:
+																	cam.impulseOscillator.applyImpulse(_dir * 0.5)
+														except: pass
 													else:
-														dmg = random.randint(int(_shot['shell']['damage'][0]*0.75), int(_shot['shell']['damage'][0]*1.25))
-													
-													if dmg > 0:
-														player_mock.health -= dmg
-														player_mock.last_killer_id = eid
+														_dmg_base = _shot['shell']['damage'][0]
+														dmg = _dmg_base * random.uniform(0.75, 1.25)
+														player_mock.health -= int(dmg)
+														try:
+															_fm = BigWorld.player().newFakeModel()
+															BigWorld.addModel(_fm)
+															_fm.position = BigWorld.camera().position
+															snd = _fm.getSound('/hits/hits/tank_hit_armor_crit')
+															if snd: snd.play()
+															def _rem_fm(f=_fm):
+																try: BigWorld.delModel(f)
+																except: pass
+															BigWorld.callback(3.0, _rem_fm)
+														except Exception as ex:
+															LOG_DEBUG('Pierce FM err:', ex)
+														try:
+															if hasattr(player.inputHandler, 'ctrl') and player.inputHandler.ctrl:
+																cam = getattr(player.inputHandler.ctrl, 'camera', None)
+																_dir = Math.Vector3(dx, 0, dz)
+																_dir.normalise()
+																if cam and hasattr(cam, 'applyImpulse'):
+																	cam.applyImpulse(_dir, 1.0)
+																elif cam and hasattr(cam, 'impulseOscillator') and cam.impulseOscillator:
+																	cam.impulseOscillator.applyImpulse(_dir * 1.0)
+														except: pass
+														if player_mock.health <= 0:
+															player_mock.health = 0
+														# Update player vehicle HP physically
+														if hasattr(player, 'vehicle') and player.vehicle:
+															player.vehicle.health = player_mock.health
+														# Update GUI
+														try:
+															import gui.WindowsManager
+															bw = gui.WindowsManager.g_windowsManager.battleWindow
+															if hasattr(bw, 'damagePanel'):
+																bw.damagePanel.updateHealth(player_mock.health)
+															if hasattr(bw, 'vMarkersManager'):
+																pass # bw.vMarkersManager.updateVehicleHealth(player.playerVehicleID, player_mock.health, 1, 0)
+														except: pass
 														if player_mock.health <= 0:
 															player_mock.health = 0
 														
@@ -2341,6 +2914,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 														_dmg = random.randint(200, 400)
 														hit_veh.health -= _dmg
 														hit_veh.damage_from_bots = getattr(hit_veh, 'damage_from_bots', 0) + _dmg
+														hit_veh.last_killer_id = m_veh.id
 														try:
 															player.arena.onVehicleStatisticsUpdate(hit_veh.id)
 															from gui import WindowsManager
@@ -2381,6 +2955,8 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 																		if not getattr(_d_ch, 'loaded', True) or not getattr(_d_hu, 'loaded', True) or not getattr(_d_tu, 'loaded', True) or not getattr(_d_gu, 'loaded', True):
 																			BigWorld.callback(0.1, _swap_destroyed_model_bot)
 																			return
+																		try: _old_ch_ref.visible = False
+																		except: pass
 																		try: BigWorld.delModel(_old_ch_ref)
 																		except: pass
 																		_d_ch.position = _old_pos
@@ -2491,35 +3067,59 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							
 							def _swap_player_destroyed(_d_ch=_d_ch, _d_hu=_d_hu, _d_tu=_d_tu, _d_gu=_d_gu):
 								try:
-									# Step 1: Remove live chassis from scene (hull/turret/gun are attached children)
-									_live_chassis = loaded_models.get('chassis') or loaded_models.get('hull')
-									if _live_chassis is not None:
-										try:
-											for _mot in list(_live_chassis.motors):
-												_live_chassis.delMotor(_mot)
-										except: pass
-										try: BigWorld.delModel(_live_chassis)
-										except: pass
-									
-									# Step 2: Attach destroyed sub-parts
-									try: _d_ch.node('V').attach(_d_hu)
-									except: pass
-									try: _d_hu.node('HP_turretJoint').attach(_d_tu)
-									except: pass
-									try: _d_tu.node('HP_gunJoint').attach(_d_gu)
-									except: pass
-									
-									# Step 3: Add destroyed chassis to scene at same position
-									_d_ch.position = Math.Vector3(mock_veh.position)
+									# Force load
 									_add_model(_d_ch)
-									try: _d_ch.addMotor(BigWorld.Servo(chassis_mp))
-									except: pass
-									LOG_DEBUG('Player destroyed model placed OK')
+									_add_model(_d_hu)
+									_add_model(_d_tu)
+									_add_model(_d_gu)
+									
+									def _attach_when_ready():
+										if not getattr(_d_ch, 'loaded', True) or not getattr(_d_hu, 'loaded', True) or not getattr(_d_tu, 'loaded', True) or not getattr(_d_gu, 'loaded', True):
+											BigWorld.callback(0.1, _attach_when_ready)
+											return
+										try: BigWorld.delModel(_d_hu)
+										except: pass
+										try: BigWorld.delModel(_d_tu)
+										except: pass
+										try: BigWorld.delModel(_d_gu)
+										except: pass
+										
+										_live_chassis = loaded_models.get('chassis') or loaded_models.get('hull')
+										if _live_chassis is not None:
+											try:
+												for _mot in list(_live_chassis.motors):
+													_live_chassis.delMotor(_mot)
+											except: pass
+											try: _live_chassis.visible = False
+											except: pass
+											try: BigWorld.delModel(_live_chassis)
+											except: pass
+										
+										try: _d_ch.node('V').attach(_d_hu)
+										except: pass
+										try: _d_hu.node('HP_turretJoint').attach(_d_tu)
+										except: pass
+										try: _d_tu.node('HP_gunJoint').attach(_d_gu)
+										except: pass
+										
+										_d_ch.position = Math.Vector3(mock_veh.position)
+										try: _d_ch.addMotor(BigWorld.Servo(chassis_mp))
+										except: pass
+										try:
+											mock_veh._collision_obstacle = BigWorld.PyModelObstacle(
+												_ptd.hull['models']['destroyed'],
+												_ptd.turret['models']['destroyed'],
+												chassis_mp,
+												False
+											)
+										except: pass
+										LOG_DEBUG('Player destroyed model placed OK')
+									_attach_when_ready()
 								except Exception as _e:
 									import traceback
 									LOG_DEBUG('Player model swap failed:', traceback.format_exc())
 							
-							BigWorld.callback(0.5, _swap_player_destroyed)
+							BigWorld.callback(0.1, _swap_player_destroyed)
 						except Exception as _e: LOG_DEBUG('Player death model err:', str(_e))
 						
 						# Exit battle in 5 seconds - use game.fini() which is the proper hook
@@ -2535,6 +3135,20 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								except Exception as e: LOG_DEBUG('CRITICAL ERROR IN K KEY:', e); import traceback; LOG_DEBUG(traceback.format_exc())
 								
 								# Safely stop all control_modes ticks before they can crash
+								try:
+									if not hasattr(player, 'soundNotifications'):
+										try:
+											from gui.Scaleform import IngameSoundNotifications
+											player.soundNotifications = IngameSoundNotifications.IngameSoundNotifications()
+											player.soundNotifications.start()
+										except Exception as e:
+											try:
+												from gui import IngameSoundNotifications
+												player.soundNotifications = IngameSoundNotifications.IngameSoundNotifications()
+												player.soundNotifications.start()
+											except Exception as e: pass
+								except: pass
+								
 								try:
 									_aih = getattr(player, 'inputHandler', None)
 									if _aih is not None:
@@ -2926,6 +3540,22 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							enemy_mock.damage_from_player = getattr(enemy_mock, 'damage_from_player', 0) + actual_dmg
 							enemy_mock.hits_from_player = getattr(enemy_mock, 'hits_from_player', 0) + 1
 							LOG_DEBUG('HIT! Damage:', dmg, 'Enemy HP:', enemy_mock.health)
+							
+							try:
+								sound_str = 'enemy_killed_by_player' if enemy_mock.health <= 0 else 'armor_pierced_by_player'
+								if hasattr(player, 'soundNotifications') and player.soundNotifications is not None:
+									player.soundNotifications.play(sound_str)
+								else:
+									if not hasattr(g_offline_aih, '_snd_notif'):
+										try:
+											from gui.IngameSoundNotifications import IngameSoundNotifications
+											g_offline_aih._snd_notif = IngameSoundNotifications()
+											g_offline_aih._snd_notif.start()
+										except: pass
+									if hasattr(g_offline_aih, '_snd_notif'):
+										g_offline_aih._snd_notif.play(sound_str)
+							except Exception as e:
+								LOG_DEBUG('Hit sound error:', str(e))
 						
 						# Update vehicle marker health
 						try:
@@ -3038,28 +3668,55 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								_old_yaw = _old_ch.yaw
 								_old_ch_ref = _old_ch
 								def _swap_destroyed_model(_d_ch=_d_ch, _d_hu=_d_hu, _d_tu=_d_tu, _d_gu=_d_gu, _old_ch_ref=_old_ch_ref, _old_pos=_old_pos, _old_yaw=_old_yaw):
-									if not getattr(_d_ch, 'loaded', True) or not getattr(_d_hu, 'loaded', True) or not getattr(_d_tu, 'loaded', True) or not getattr(_d_gu, 'loaded', True):
-										BigWorld.callback(0.1, _swap_destroyed_model)
-										return
-									try: BigWorld.delModel(_old_ch_ref)
-									except: pass
-									_d_ch.position = _old_pos
-									_d_ch.yaw = _old_yaw
-									_h_mat = Math.Matrix(); _h_mat.setIdentity()
-									_t_mat = Math.Matrix(); _t_mat.setIdentity()
-									_g_mat = Math.Matrix(); _g_mat.setIdentity()
-									try: _d_ch.node('V').attach(_d_hu)
-									except: pass
-									try: 
-										m_veh._d_t_node = _d_hu.node('HP_turretJoint', _t_mat)
-										m_veh._d_t_node.attach(_d_tu)
-									except: pass
-									try: 
-										m_veh._d_g_node = _d_tu.node('HP_gunJoint', _g_mat)
-										m_veh._d_g_node.attach(_d_gu)
-									except: pass
 									_add_model(_d_ch)
-									LOG_DEBUG('Destroyed model swapped OK')
+									_add_model(_d_hu)
+									_add_model(_d_tu)
+									_add_model(_d_gu)
+									def _attach_when_ready():
+										if not getattr(_d_ch, 'loaded', True) or not getattr(_d_hu, 'loaded', True) or not getattr(_d_tu, 'loaded', True) or not getattr(_d_gu, 'loaded', True):
+											BigWorld.callback(0.1, _attach_when_ready)
+											return
+										try: BigWorld.delModel(_d_hu)
+										except: pass
+										try: BigWorld.delModel(_d_tu)
+										except: pass
+										try: BigWorld.delModel(_d_gu)
+										except: pass
+										try: _old_ch_ref.visible = False
+										except: pass
+										try: BigWorld.delModel(_old_ch_ref)
+										except: pass
+										
+										if getattr(m_veh, 'bw_entity', None) is not None:
+											try: m_veh.bw_entity.model = None
+											except:
+												try: m_veh.bw_entity.model = BigWorld.Model('')
+												except: pass
+										
+										_d_ch.position = _old_pos
+										_d_ch.yaw = _old_yaw
+										_t_mat = Math.Matrix(); _t_mat.setIdentity()
+										_g_mat = Math.Matrix(); _g_mat.setIdentity()
+										try: _d_ch.node('V').attach(_d_hu)
+										except: pass
+										try: 
+											m_veh._d_t_node = _d_hu.node('HP_turretJoint', _t_mat)
+											m_veh._d_t_node.attach(_d_tu)
+										except: pass
+										try: 
+											m_veh._d_g_node = _d_tu.node('HP_gunJoint', _g_mat)
+											m_veh._d_g_node.attach(_d_gu)
+										except: pass
+										try:
+											m_veh._collision_obstacle = BigWorld.PyModelObstacle(
+												_dtd.hull['models']['destroyed'],
+												_dtd.turret['models']['destroyed'],
+												m_veh.matrix,
+												False
+											)
+										except: pass
+										LOG_DEBUG('Destroyed model swapped OK')
+									_attach_when_ready()
 								BigWorld.callback(0.0, _swap_destroyed_model)
 							except Exception as _de:
 								LOG_DEBUG('Destroyed model swap error:', str(_de))
@@ -3116,6 +3773,53 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 			_spawn_count = [0]
 			def _mock_handleKeyEvent(event):
 				import BigWorld, Keys, Math
+				player = BigWorld.player()
+				
+				if event.key == Keys.KEY_RIGHTMOUSE:
+					if event.isKeyDown():
+						_gun_state['rmb_down'] = True
+						bot = getattr(player, '_outlined_bot', None)
+						prev_target = getattr(player, '_autoaim_target', None)
+						if bot is not None:
+							team = getattr(bot, '_bot_team', 2)
+							player_team = getattr(player, '_offhangar_team', 1)
+							if team != player_team and getattr(bot, 'health', 0) > 0:
+								if prev_target == bot:
+									player._autoaim_target = None
+								else:
+									player._autoaim_target = bot
+							else:
+								player._autoaim_target = None
+						else:
+							player._autoaim_target = None
+							
+						curr_target = getattr(player, '_autoaim_target', None)
+						if prev_target != curr_target:
+							import debug_utils
+							debug_utils.LOG_DEBUG('Autoaim state changed:', prev_target, '->', curr_target)
+							try:
+								sound_str = 'target_captured' if curr_target is not None else 'target_unlocked'
+								if hasattr(player, 'soundNotifications') and player.soundNotifications is not None:
+									player.soundNotifications.play(sound_str)
+								else:
+									if not hasattr(g_offline_aih, '_snd_notif'):
+										try:
+											from gui.IngameSoundNotifications import IngameSoundNotifications
+											g_offline_aih._snd_notif = IngameSoundNotifications()
+											g_offline_aih._snd_notif.start()
+										except: pass
+									if hasattr(g_offline_aih, '_snd_notif'):
+										g_offline_aih._snd_notif.play(sound_str)
+										debug_utils.LOG_DEBUG('Played sound via IngameSoundNotifications')
+							except Exception as e:
+								debug_utils.LOG_DEBUG('Sound error:', str(e))
+						
+						if getattr(player, '_autoaim_target', None) is None:
+							_gun_state['locked_local_yaw'] = turret_yaw[0]
+							_gun_state['locked_local_pitch'] = gun_pitch[0]
+					else:
+						_gun_state['rmb_down'] = False
+						
 				if event.isKeyDown() and event.key in [Keys.KEY_1, Keys.KEY_2, Keys.KEY_3]:
 					try:
 						idx = event.key - Keys.KEY_1
@@ -3137,33 +3841,30 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 						import BigWorld
 						player = BigWorld.player()
 						if hasattr(player, 'arena'):
-							allied = 0
-							enemy = 0
-							for k, v in player.arena.vehicles.items():
-								is_alive = True
-								_m_vehs = globals().get('G_MOCK_VEHICLES', {})
-								if k in _m_vehs:
-									if getattr(_m_vehs[k], 'health', 0) <= 0:
-										is_alive = False
-								if v.get('isAlive', True) == False: is_alive = False
-								
-								if is_alive:
-									if v['team'] == player.team: allied += 1
-									else: enemy += 1
-							
-							p_team = player.team
-							p_dbid = getattr(player, 'databaseID', 1)
+							p_team = getattr(player, '_offhangar_team', getattr(player, 'team', 1))
 							p_name = getattr(player, 'name', 'Player')
-							p_cd = 0
-							if player.playerVehicleID in player.arena.vehicles:
-								_p_vinfo = player.arena.vehicles[player.playerVehicleID]
-								_p_td = _p_vinfo.get('vehicleType', None)
-								_p_td_type = getattr(_p_td, 'type', None)
-								p_cd = getattr(_p_td_type, 'compactDescr', 0)
-							if p_cd == 0:
-								p_cd = getattr(player.vehicleTypeDescriptor.type, 'compactDescr', 0) if hasattr(player, 'vehicleTypeDescriptor') else 0
-							arena_geom_id = getattr(player.arena, 'arenaType', None).geometryID if hasattr(player.arena, 'arenaType') else 1
-							player_brc = player.battleResultsCache
+							p_dbid = getattr(player, 'databaseID', 1)
+							_td = None
+							try: _td = loaded_models.get('td')
+							except: pass
+							if not _td: _td = getattr(player, 'vehicleTypeDescriptor', None)
+							
+							p_cd = getattr(getattr(_td, 'type', None), 'compactDescr', 0)
+							
+							LOG_DEBUG('BATTLE RESULTS LOCAL P_CD IS:', p_cd)
+							
+							import debug_utils
+							debug_utils.LOG_DEBUG('BATTLE RESULTS P_CD IS:', p_cd)
+							
+							if p_cd == 0 and hasattr(player, 'arena') and player.playerVehicleID in player.arena.vehicles:
+								_vinfo = player.arena.vehicles[player.playerVehicleID]
+								_vtype = _vinfo.get('vehicleType', None)
+								if _vtype:
+									p_cd = getattr(getattr(_vtype, 'type', None), 'compactDescr', 0)
+									debug_utils.LOG_DEBUG('BATTLE RESULTS FALLBACK P_CD IS:', p_cd)
+							
+							allied = sum(v.get('frags', 0) for v in player.arena.vehicles.values() if v.get('team', 2) == p_team)
+							enemy = sum(v.get('frags', 0) for v in player.arena.vehicles.values() if v.get('team', 2) != p_team)
 							
 							def _show_res():
 								try:
@@ -3196,11 +3897,14 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 									p_max_health = getattr(getattr(player, 'vehicleTypeDescriptor', None), 'maxHealth', 1000)
 									p_health = getattr(getattr(player, 'vehicle', None), 'health', p_max_health)
 									
+									_player_mock = globals().get('G_MOCK_VEHICLES', {}).get(getattr(player, 'playerVehicleID', -1))
+									_p_killer_id = getattr(_player_mock, 'last_killer_id', 255) if p_health <= 0 else 0
+									
 									total_dmg_dealt = 0
 									total_frags = 0
 									total_hits = 0
 									players_dict = {p_dbid: {'name': p_name, 'clanDBID': 0, 'clanAbbrev': '', 'prebattleID': 0, 'team': p_team, 'igrType': 0}}
-									vehicles_dict = {v_id: {'health': p_health, 'credits': 10000, 'xp': 1000, 'shots': 10, 'hits': 8, 'he_hits': 0, 'pierced': 8, 'damageDealt': 0, 'damageAssisted': 0, 'damageReceived': max(0, p_max_health - p_health), 'shotsReceived': 0, 'spotted': 0, 'damaged': 0, 'kills': 0, 'tdamageDealt': 0, 'tkills': 0, 'isTeamKiller': False, 'capturePoints': 0, 'droppedCapturePoints': 0, 'mileage': 100, 'lifeTime': 300, 'killerID': 255 if p_health <= 0 else 0, 'achievements': [], 'repair': 0, 'freeXP': 50, 'details': {}, 'accountDBID': p_dbid, 'team': p_team, 'typeCompDescr': p_cd, 'gold': 0}}
+									vehicles_dict = {v_id: {'health': p_health, 'credits': 10000, 'xp': 1000, 'shots': 10, 'hits': 8, 'he_hits': 0, 'pierced': 8, 'damageDealt': 0, 'damageAssisted': 0, 'damageReceived': max(0, p_max_health - p_health), 'shotsReceived': 0, 'spotted': 0, 'damaged': 0, 'kills': 0, 'tdamageDealt': 0, 'tkills': 0, 'isTeamKiller': False, 'capturePoints': 0, 'droppedCapturePoints': 0, 'mileage': 100, 'lifeTime': 300, 'killerID': _p_killer_id, 'achievements': [], 'repair': 0, 'freeXP': 50, 'details': {}, 'accountDBID': p_dbid, 'team': p_team, 'typeCompDescr': p_cd, 'gold': 0}}
 									personal_details = {}
 									
 									for vid, vinfo in getattr(player.arena, 'vehicles', {}).items():
@@ -3254,12 +3958,11 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 										player_killed_this = is_killed and _dmg_from_player > 0 and _dmg_from_player >= (dmg_received / 2.0)
 										if player_killed_this and bot_team == p_team: player_killed_this = False
 										
-										if _dmg_from_player > 0:
-											total_dmg_dealt += _dmg_from_player
-											total_hits += 1
-											if player_killed_this: total_frags += 1
+										total_dmg_dealt += _dmg_from_player
+										total_hits += _hits_from_player
+										if player_killed_this: total_frags += 1
 										
-										killer_id = v_id if player_killed_this else (255 if is_killed else 0)
+										killer_id = v_id if player_killed_this else (getattr(_mock_vehicles.get(vid, None), 'last_killer_id', 255) if is_killed else 0)
 										
 										# Simulate some random shots and hits if the bot dealt damage
 										_bot_shots = max(1, int(_dmg_from_bots / 200.0)) if _dmg_from_bots > 0 else 1
@@ -3269,16 +3972,21 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 											personal_details[vid] = {'spotted': 1 if bot_team != p_team else 0, 'killed': 1 if player_killed_this else 0, 'hits': _hits_from_player, 'he_hits': 0, 'pierced': _hits_from_player, 'damageDealt': _dmg_from_player, 'damageAssisted': 0, 'crits': 1 if player_killed_this else 0, 'fire': 0}
 											
 									vehicles_dict[v_id]['damageDealt'] = total_dmg_dealt
-									vehicles_dict[v_id]['kills'] = total_frags
+									vehicles_dict[v_id]['kills'] = 0 # Will be populated by the loop below
 									vehicles_dict[v_id]['hits'] = total_hits
 									vehicles_dict[v_id]['pierced'] = total_hits
 									vehicles_dict[v_id]['shots'] = max(10, total_hits + 2)
 									vehicles_dict[v_id]['spotted'] = len(personal_details)
 									vehicles_dict[v_id]['damaged'] = len(personal_details)
 									
+									for v_iter_id, v_iter_data in vehicles_dict.items():
+										k_id = v_iter_data.get('killerID', 0)
+										if k_id and k_id in vehicles_dict and k_id != v_iter_id:
+											vehicles_dict[k_id]['kills'] = vehicles_dict[k_id].get('kills', 0) + 1
+									
 									mock_res = {
 										'arenaUniqueID': mock_arena_id,
-										'personal': {'health': p_health, 'credits': 10000, 'xp': 1000, 'shots': globals().get('G_OFFHANGAR_SHOTS_FIRED', max(0, total_hits)), 'hits': total_hits, 'he_hits': 0, 'pierced': total_hits, 'damageDealt': total_dmg_dealt, 'damageAssisted': 0, 'damageReceived': 0, 'shotsReceived': 0, 'spotted': len(personal_details), 'damaged': len(personal_details), 'kills': total_frags, 'tdamageDealt': 0, 'tkills': 0, 'isTeamKiller': False, 'capturePoints': 0, 'droppedCapturePoints': 0, 'mileage': 100, 'lifeTime': 300, 'killerID': 0, 'achievements': [], 'repair': 0, 'freeXP': 50, 'details': personal_details, 'accountDBID': p_dbid, 'team': p_team, 'typeCompDescr': p_cd, 'gold': 0, 'xpPenalty': 0, 'creditsPenalty': 0, 'creditsContributionIn': 0, 'creditsContributionOut': 0, 'tmenXP': 0, 'eventCredits': 0, 'eventGold': 0, 'eventXP': 0, 'eventFreeXP': 0, 'eventTMenXP': 0, 'autoRepairCost': 0, 'autoLoadCost': (0, 0), 'autoEquipCost': (0, 0), 'isPremium': False, 'premiumXPFactor10': 15, 'premiumCreditsFactor10': 15, 'dailyXPFactor10': 10, 'aogasFactor10': 10, 'markOfMastery': 0, 'dossierPopUps': []},
+										'personal': {'health': p_health, 'credits': 10000, 'xp': 1000, 'shots': globals().get('G_OFFHANGAR_SHOTS_FIRED', max(0, total_hits)), 'hits': total_hits, 'he_hits': 0, 'pierced': total_hits, 'damageDealt': total_dmg_dealt, 'damageAssisted': 0, 'damageReceived': 0, 'shotsReceived': 0, 'spotted': len(personal_details), 'damaged': len(personal_details), 'kills': total_frags, 'tdamageDealt': 0, 'tkills': 0, 'isTeamKiller': False, 'capturePoints': 0, 'droppedCapturePoints': 0, 'mileage': 100, 'lifeTime': 300, 'killerID': _p_killer_id, 'achievements': [], 'repair': 0, 'freeXP': 50, 'details': personal_details, 'accountDBID': p_dbid, 'team': p_team, 'typeCompDescr': p_cd, 'gold': 0, 'xpPenalty': 0, 'creditsPenalty': 0, 'creditsContributionIn': 0, 'creditsContributionOut': 0, 'tmenXP': 0, 'eventCredits': 0, 'eventGold': 0, 'eventXP': 0, 'eventFreeXP': 0, 'eventTMenXP': 0, 'autoRepairCost': 0, 'autoLoadCost': (0, 0), 'autoEquipCost': (0, 0), 'isPremium': True, 'premiumXPFactor10': 15, 'premiumCreditsFactor10': 15, 'dailyXPFactor10': 10, 'aogasFactor10': 10, 'markOfMastery': 0, 'dossierPopUps': []},
 										'common': {'arenaTypeID': getattr(player.arena, 'arenaTypeID', 1), 'arenaCreateTime': __import__('time').time(), 'winnerTeam': p_team if allied > enemy else (0 if allied==enemy else (3-p_team)), 'finishReason': 1, 'duration': 300, 'bonusType': 1, 'guiType': 1, 'vehLockMode': 0},
 										'players': players_dict,
 										'vehicles': vehicles_dict
@@ -3296,8 +4004,10 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 										import BigWorld
 										BigWorld.callback(0.1, lambda: callback(1, mock_res))
 									
-									orig_br_get = player_brc.get
-									player_brc.get = _mock_get
+									player_brc = getattr(player, 'battleResultsCache', None)
+									if player_brc:
+										orig_br_get = player_brc.get
+										player_brc.get = _mock_get
 									
 									from gui import WindowsManager
 									window = getattr(WindowsManager.g_windowsManager, 'window', None)
@@ -3363,14 +4073,16 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 						_spawn_count[0] += 1
 						
 						# Load visual models
-						ch = BigWorld.Model(td.chassis['models']['undamaged'])
-						hu = BigWorld.Model(td.hull['models']['undamaged'])
-						tu = BigWorld.Model(td.turret['models']['undamaged'])
-						gu = BigWorld.Model(td.gun['models']['undamaged'])
 						
-						def _wait_and_add():
-							if not getattr(ch, 'loaded', True) or not getattr(hu, 'loaded', True) or not getattr(tu, 'loaded', True) or not getattr(gu, 'loaded', True):
-								BigWorld.callback(0.1, _wait_and_add)
+						def _on_bot_models_loaded(resourceRefs):
+							try:
+								ch = resourceRefs[td.chassis['models']['undamaged']]
+								hu = resourceRefs[td.hull['models']['undamaged']]
+								tu = resourceRefs[td.turret['models']['undamaged']]
+								gu = resourceRefs[td.gun['models']['undamaged']]
+							except Exception as e:
+								import debug_utils
+								debug_utils.LOG_DEBUG('Bot model unpack error:', str(e))
 								return
 							e_mock = _MockVeh()
 							e_mock.id = e_id
@@ -3400,7 +4112,22 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							}
 							ch.position = e_mock.position
 							ch.yaw = e_mock.yaw
-							_add_model(ch)
+							
+							_eid = BigWorld.createEntity('OfflineEntity', player.spaceID, 0, e_mock.position, (0, 0, e_mock.yaw), dict())
+							e_mock.bw_entity = None
+							def _assign_model_when_ready(eid, model_to_add, retries=10, _e_mock=e_mock):
+								ent = BigWorld.entity(eid)
+								if ent:
+									ent.model = model_to_add  # Outline needs it!
+									try:
+										ent.filter = BigWorld.AvatarFilter()
+									except: pass
+									_e_mock.bw_entity = ent
+								elif retries > 0:
+									BigWorld.callback(0.1, lambda: _assign_model_when_ready(eid, model_to_add, retries - 1, _e_mock))
+								else:
+									_add_model(model_to_add)
+							_assign_model_when_ready(_eid, ch)
 							h_mat = Math.Matrix(); h_mat.setIdentity()
 							t_mat = Math.Matrix(); t_mat.setIdentity()
 							g_mat = Math.Matrix(); g_mat.setIdentity()
@@ -3416,6 +4143,15 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							e_mock._turret_model = tu
 							e_mock._gun_model = gu
 							e_mock._t_mat = t_mat
+							try:
+								e_mock._collision_obstacle = BigWorld.PyModelObstacle(
+									td.hull['models']['undamaged'],
+									td.turret['models']['undamaged'],
+									e_mock.matrix,
+									True
+								)
+							except Exception as e:
+								LOG_DEBUG('OfflineBattle PyModelObstacle Error:', e)
 							class FakeEnemyAppearance(object):
 								def __init__(self):
 									from Event import Event
@@ -3449,7 +4185,13 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 							except Exception as e:
 								LOG_DEBUG('GUI Add error:', str(e))
 							LOG_DEBUG('Enemy Clone Spawned at:', target_pos)
-						BigWorld.callback(0.1, _wait_and_add)
+						
+						BigWorld.loadResourceListBG((
+							td.chassis['models']['undamaged'],
+							td.hull['models']['undamaged'],
+							td.turret['models']['undamaged'],
+							td.gun['models']['undamaged'],
+						), _on_bot_models_loaded)
 						return True
 					except Exception as e:
 						import traceback
@@ -3581,6 +4323,14 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 						import AvatarInputHandler.cameras
 						AvatarInputHandler.cameras.SniperCamera._USE_SWINGING = False
 						BigWorld.wg_isSniperModeSwingingEnabled = lambda *a, **kw: False
+						
+						if not hasattr(BigWorld, '_orig_serverTime'):
+							BigWorld._orig_serverTime = BigWorld.serverTime
+							BigWorld._offline_start_time = __import__('time').time()
+							def _mock_serverTime():
+								return __import__('time').time() - BigWorld._offline_start_time
+							BigWorld.serverTime = _mock_serverTime
+						
 						def _do():
 							try:
 								from gui import WindowsManager
@@ -3614,30 +4364,17 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 								AccountSettings.getSettings = staticmethod(_mock_getSettings)
 								
 								if hasattr(player.arena, 'onPeriodChange'):
-									_prebattle_time = 5.0
-									_battle_duration = 600
+									_battle_duration = 900
 									
-									# Prebattle Countdown
+									# RESTORE PREBATTLE
 									player.arena.period = 2
-									player.arena.periodLength = _prebattle_time
-									player.arena.periodEndTime = BigWorld.serverTime() + _prebattle_time
-									player.arena.onPeriodChange(2, player.arena.periodEndTime, _prebattle_time, 0)
-									
-									# Switch to Battle Mode
-									def _start_battle():
-										try:
-											player.arena.period = 3
-											player.arena.periodLength = _battle_duration
-											player.arena.periodEndTime = BigWorld.serverTime() + _battle_duration
-											player.arena.onPeriodChange(3, player.arena.periodEndTime, _battle_duration, 0)
-											try:
-												import MusicController as _MC
-												_MC.g_musicController.play(_MC.MUSIC_EVENT_NONE)
-											except Exception as e: LOG_DEBUG('CRITICAL ERROR IN K KEY:', e); import traceback; LOG_DEBUG(traceback.format_exc())
-										except Exception as e:
-											LOG_DEBUG('OfflineBattle StartBattle error:', e)
-									
-									BigWorld.callback(_prebattle_time, _start_battle)
+									player.arena.periodLength = 15
+									player.arena.periodEndTime = BigWorld.serverTime() + 15
+									player.arena.onPeriodChange(2, player.arena.periodEndTime, 15, 0)
+									try:
+										import MusicController as _MC
+										_MC.g_musicController.play(_MC.MUSIC_EVENT_NONE)
+									except: pass
 									
 								if hasattr(player.arena, 'onNewVehicleListReceived'):
 									player.arena.onNewVehicleListReceived()
@@ -3721,7 +4458,7 @@ def _try_spawn_battle_avatar_stub(player, cmdName):
 def _step_on_enqueued(player, vehInvID, cmdName):
 	try:
 		_enable_offline_battle_transition(player)
-		ctx = build_offline_battle_context(player, vehInvID)
+		ctx = build_offline_battle_context(player, vehInvID, cmdName)
 		player._offhangar_battle_ctx = ctx
 		player._offhangar_player_vehicle_id = ctx.get('playerVehicleID', vehInvID)
 		player._offhangar_team = 1
@@ -3887,3 +4624,41 @@ def start_offline_random_from_hangar(player, vehInvID):
 
 	import BigWorld
 	BigWorld.callback(0.05, _run)
+
+try:
+	import gui.Scaleform.battledispatcherinterface as bdi
+	if hasattr(bdi, 'BattleDispatcherInterface'):
+		orig_updateFightButton = bdi.BattleDispatcherInterface.updateFightButton
+		def _new_updateFightButton(self):
+			orig_updateFightButton(self)
+			
+			fightTypes = getattr(self, '_offhangar_fightTypes_temp', None)
+			if fightTypes is None:
+				# In case we can't capture it easily, we just call self.call again!
+				pass
+		
+		# Better approach: monkey-patch self.call in BattleDispatcherInterface
+		orig_call = bdi.BattleDispatcherInterface.call
+		def _new_call(self, methodName, args=None):
+			if methodName == 'common.setFightButton' and isinstance(args, list):
+				args.append('Bootcamp')
+				args.append('tutorial')
+				args.append(False)
+				args.append('')
+			return orig_call(self, methodName, args)
+		bdi.BattleDispatcherInterface.call = _new_call
+
+		orig_onFightButtonClick = bdi.BattleDispatcherInterface.onFightButtonClick
+		def _new_onFightButtonClick(self, callbackId, mapId=None, queueType=0, confirm=False):
+			if queueType == 'tutorial':
+				import BigWorld
+				p = BigWorld.player()
+				if hasattr(p, 'enqueueTutorial'):
+					p.enqueueTutorial()
+				return
+			return orig_onFightButtonClick(self, callbackId, mapId, queueType, confirm)
+		bdi.BattleDispatcherInterface.onFightButtonClick = _new_onFightButtonClick
+except Exception:
+	import traceback
+	LOG_DEBUG('Failed to hook UI')
+	LOG_DEBUG(traceback.format_exc())

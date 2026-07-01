@@ -11,6 +11,8 @@ try:
     import sys
     this_file = sys._getframe().f_code.co_filename
     path = os.path.normpath(os.path.join(os.path.dirname(this_file), 'config.json'))
+    if not os.path.exists(path):
+        path = 'res_mods/0.8.2/scripts/client/gui/mods/offhangar/config.json'
     LOG_DEBUG('Loading config from: ' + path)
     with open(path, 'r') as f:
         CONFIG_OPTIONS = json.load(f)
@@ -47,7 +49,7 @@ OFFLINE_SERVER_SETTINGS = {
     'xmpp_bosh_connections': [],
     'xmpp_connections': [],
     'xmpp_alt_connections': [],
-    'file_server': {},
+    'file_server': {'clan_emblems': {'url_template': ''}, 'rare_achievements_images': {'url_template': ''}, 'rare_achievements_texts': {'url_template': ''}},
     'voipDomain': '',
     'voipUserDomain': ''
 }

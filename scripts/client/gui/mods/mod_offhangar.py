@@ -117,6 +117,7 @@ class _OfflineArenaStub(object):
 			self.weatherPresets = []
 			self.geometryName = ''
 			self.gameplayName = ''
+			self.teamBasePositions = {1: {1: (0,0)}, 2: {1: (0,0)}}
 			self.umbraEnabled = 0
 			self.boundingBox = ( (0,0), (1000, 1000) )
 			self.defaultReverbPreset = ''
@@ -126,19 +127,33 @@ class _OfflineArenaStub(object):
 			self.minimap = None
 
 	class _EventStub(object):
+		def __init__(self):
+			self.delegates = []
+
 		def __iadd__(self, other):
+			if other not in self.delegates:
+				self.delegates.append(other)
 			return self
 
 		def __isub__(self, other):
+			if other in self.delegates:
+				self.delegates.remove(other)
 			return self
 
 		def __call__(self, *args, **kwargs):
-			return
+			from gui.mods.offhangar.logging import LOG_DEBUG
+			LOG_DEBUG('EventStub FIRE', len(self.delegates), args)
+			for delegate in self.delegates:
+				try: delegate(*args, **kwargs)
+				except Exception as e:
+					LOG_DEBUG('EventStub Delegate Error', e)
 
 	def __init__(self):
 		self.vehicles = {}
 		self.statistics = {}
 		self.arenaType = self._ArenaTypeStub()
+		self.guiType = 1 # constants.ARENA_GUI_TYPE.RANDOM
+		self.gameMode = 0 # constants.ARENA_GAME_MODE.CTF
 		self.guiType = 0
 		self.bonusType = 0
 		self.extraData = {}
@@ -457,6 +472,9 @@ _game_module.fini = _offline_game_fini
 def _offline_enqueue_random_cmd_id():
 	return getattr(AccountCommands, 'CMD_ENQUEUE_RANDOM', 700)
 
+def _offline_enqueue_tutorial_cmd_id():
+	return getattr(AccountCommands, 'CMD_ENQUEUE_TUTORIAL', 737)
+
 
 def _install_offline_account__do_cmd_hook():
 	if '_PlayerAccount__doCmd' not in dir(Account.PlayerAccount):
@@ -467,7 +485,7 @@ def _install_offline_account__do_cmd_hook():
 		def PlayerAccount___doCmd(baseFunc, baseSelf, doCmdMethod, cmd, callback, *args):
 			if not getattr(baseSelf, 'isOffline', False):
 				return baseFunc(baseSelf, doCmdMethod, cmd, callback, *args)
-			if doCmdMethod != 'doCmdInt3' or cmd != _offline_enqueue_random_cmd_id():
+			if doCmdMethod != 'doCmdInt3' or (cmd != _offline_enqueue_random_cmd_id() and cmd != _offline_enqueue_tutorial_cmd_id()):
 				return baseFunc(baseSelf, doCmdMethod, cmd, callback, *args)
 			getRid = getattr(baseSelf, '_PlayerAccount__getRequestID', None)
 			if not callable(getRid):
@@ -509,6 +527,14 @@ def _install_offline_enqueue_public_hooks():
 			return baseFunc(baseSelf, *args, **kwargs)
 	else:
 		LOG_DEBUG('Offline.enqueueRandom missing')
+
+	if hasattr(Account.PlayerAccount, 'enqueueTutorial'):
+		@override(Account.PlayerAccount, 'enqueueTutorial')
+		def PlayerAccount_enqueueTutorial(baseFunc, baseSelf, *args, **kwargs):
+			if getattr(baseSelf, 'isOffline', False):
+				LOG_DEBUG('Offline.enqueueTutorial IGNORED')
+				return
+			return baseFunc(baseSelf, *args, **kwargs)
 
 	candidates = []
 	for name in dir(Account.PlayerAccount):

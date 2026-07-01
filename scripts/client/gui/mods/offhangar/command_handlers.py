@@ -893,6 +893,9 @@ def configure_router(router):
 	else:
 		router.register(CMD_REQ_SERVER_STATS, handle_server_stats)
 		router.register(CMD_ENQUEUE_RANDOM, handle_enqueue_random)
+	
+	CMD_ENQUEUE_TUTORIAL = getattr(AccountCommands, 'CMD_ENQUEUE_TUTORIAL', 737)
+	router.register(CMD_ENQUEUE_TUTORIAL, handle_enqueue_random)
 
 	router.register(CMD_COMPLETE_TUTORIAL, handle_complete_tutorial)
 	router.register(CMD_SYNC_DATA, handle_sync_data)

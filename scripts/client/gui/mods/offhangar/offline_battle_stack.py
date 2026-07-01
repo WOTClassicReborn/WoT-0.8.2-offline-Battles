@@ -119,7 +119,7 @@ def _resolve_selected_compact_descr(player):
 		return 0
 
 
-def build_offline_battle_context(player, selected_veh_inv_id):
+def build_offline_battle_context(player, selected_veh_inv_id, cmdName=''):
 	"""
 	Build minimal pseudo-battle stack for the client:
 	- map: random from 0.8.2 arena_defs pool
@@ -129,6 +129,9 @@ def build_offline_battle_context(player, selected_veh_inv_id):
 	Important: keys/fields here are consumed by the arena/avatar stubs injected by the mod.
 	"""
 	map_id, map_name = random.choice(_MAP_POOL)
+	if 'tutorial' in cmdName.lower():
+		map_name = '01_karelia' # Fallback to Karelia for Bootcamp since 0.8.2 tutorial map is missing
+		map_id = 1
 
 	# Safely resolve map_id from ArenaType cache
 	try:
@@ -143,7 +146,9 @@ def build_offline_battle_context(player, selected_veh_inv_id):
 	allies, enemies = [], []
 
 	player_dbid = getattr(player, 'databaseID', 10000001) or 10000001
-	player_name = getattr(player, 'name', 'offline_player') or 'offline_player'
+	from gui.mods.offhangar._constants import CONFIG_OPTIONS
+	_cfg_name = CONFIG_OPTIONS.get('nickname', '')
+	player_name = str(_cfg_name) if _cfg_name else getattr(player, 'name', 'offline_player') or 'offline_player'
 	# Prefer compDescr by selected inv id to avoid circular playerVehicleID fallback.
 	selected_compact_descr = 0
 	try:

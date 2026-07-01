@@ -81,7 +81,7 @@ def getOfflineShopItems():
 			id = _xml.readInt(ctx, vsection, 'id', 0, 255)
 
 			shopItems[nationIdx][ITEM_TYPE_INDICES['vehicle']][0][id] = (price[0], price[1], priceFactorCamo, hornPriceFactor)
-			shopItems[nationIdx][ITEM_TYPE_INDICES['vehicle']][1].add(id)
+			
 
 		# Modules
 		for itemTypeName, itemData in itemTypeNameMap.items():
@@ -101,7 +101,7 @@ def getOfflineShopItems():
 							module = g_cache.shells(nationIdx)[id]
 
 							shopItems[nationIdx][ITEM_TYPE_INDICES['shell']][0][module['compactDescr']] = (price[0], price[1], 0, 0)
-							shopItems[nationIdx][ITEM_TYPE_INDICES['shell']][1].add(module['compactDescr'])
+							
 						except Exception:
 							pass
 			else:
@@ -112,7 +112,7 @@ def getOfflineShopItems():
 					module = itemData[1](nationIdx)[id]
 
 					shopItems[nationIdx][ITEM_TYPE_INDICES[itemData[0]]][0][module['compactDescr']] = price
-					shopItems[nationIdx][ITEM_TYPE_INDICES[itemData[0]]][1].add(module['compactDescr'])
+					
 
 		# Common (OptDevices, Equipment)
 		for commonItemTypeName, commonItemData in commonItemTypeNameMap.items():
@@ -127,7 +127,7 @@ def getOfflineShopItems():
 				device = commonItemData[1]()[id]
 				
 				shopItems[nations.NONE_INDEX][ITEM_TYPE_INDICES[commonItemData[0]]][0][device.compactDescr] = price
-				shopItems[nations.NONE_INDEX][ITEM_TYPE_INDICES[commonItemData[0]]][1].add(device.compactDescr)
+				
 			
 		ResMgr.purge(xmlPath, True)
 
@@ -160,7 +160,9 @@ def getOfflineInventory():
 		'compDescr': {}
 	}
 
-	for value in g_list._VehicleList__ids.values():
+	for key, value in g_list._VehicleList__ids.items():
+		if 'Type59_Gold' in key:
+			continue
 		vehicle = vehicles.VehicleDescr(typeID=value)
 		compDescr[i] = vehicle.makeCompactDescr()
 		turretGun = (vehicles.makeIntCompactDescrByID('vehicleTurret', *vehicle.turrets[0][0]['id']), vehicles.makeIntCompactDescrByID('vehicleGun', *vehicle.turrets[0][0]['guns'][0]['id']))
