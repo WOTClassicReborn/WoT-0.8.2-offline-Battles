@@ -141,11 +141,13 @@ class TrackFashionController(object):
         self._visual_forward = 0.0
         self._visual_left = 0.0
         self._visual_right = 0.0
+        self._animation_speed_scale = 0.65
         self._track_accel_tau = 0.38
         self._track_follow_tau = 0.16
-        self._track_stop_tau = 0.18
+        self._track_stop_tau = 0.32
         self._track_reverse_tau = 0.10
-        LOG_DEBUG('[tracks] smooth filter tau accel=', self._track_accel_tau,
+        LOG_DEBUG('[tracks] smooth filter scale=', self._animation_speed_scale,
+                  'tau accel=', self._track_accel_tau,
                   'follow=', self._track_follow_tau,
                   'stop=', self._track_stop_tau,
                   'reverse=', self._track_reverse_tau)
@@ -175,6 +177,9 @@ class TrackFashionController(object):
                 self._visual_right = 0.0
             if abs(self._visual_forward) < 0.03 and abs(target_v) < 0.03:
                 self._visual_forward = 0.0
-            self._set(movement_info(self._visual_forward, self._visual_left, self._visual_right))
+            self._set(movement_info(
+                self._visual_forward * self._animation_speed_scale,
+                self._visual_left * self._animation_speed_scale,
+                self._visual_right * self._animation_speed_scale))
         except Exception as e:
             LOG_DEBUG('[tracks] update failed:', str(e))
